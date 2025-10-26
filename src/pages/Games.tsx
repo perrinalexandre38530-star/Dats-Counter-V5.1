@@ -1,44 +1,141 @@
+// ============================================
+// src/pages/Games.tsx — Sélecteur de modes de jeu
+// ============================================
 import React from "react";
-import Section from "../components/Section";
-import RulesModal from "../components/RulesModal";
 
-export default function Games({onChoose}:{onChoose:(mode:"X01"|"Cricket"|"Killer"|"Shanghai")=>void}){
-  const items = [
-    {k:"X01", sub:"301/501/701/1001 — double-out", rules:
-      "Départ au score choisi. Bust si score < 0 ou = 1. Sortie en double si activée. Premier à 0 gagne."},
-    {k:"Cricket", sub:"15–20 + Bull, fermetures & points", rules:
-      "Marques: S=1, D=2, T=3. Ferme un numéro à 3 marques. Après fermeture, tu marques si les autres n’ont pas fermé."},
-    {k:"Killer", sub:"Double de ton numéro → deviens Killer", rules:
-      "Chaque joueur reçoit un numéro 1..20. Devient Killer en touchant le double de ton numéro. Un double sur le numéro d’un adversaire lui retire une vie."},
-    {k:"Shanghai", sub:"Cible du tour, S/D/T — Shanghai = win", rules:
-      "Cible N par manche. Points = N×multiplicateur. S+D+T du même N dans la volée = victoire immédiate."},
-  ] as const;
-
-  const [open,setOpen]=React.useState<{title:string,text:string}|null>(null);
-
+export default function Games({
+  setTab,
+}: {
+  setTab: (tab: any) => void;
+}) {
   return (
-    <div className="container">
-      <h1 className="title-xl" style={{marginBottom:12}}>Tous les jeux</h1>
-      <div className="subtitle" style={{marginBottom:14}}>Choisis un mode — clique sur i pour voir les règles</div>
+    <div
+      className="container"
+      style={{
+        padding: 16,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 16,
+      }}
+    >
+      {/* -------- Titre principal -------- */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 900,
+          marginBottom: 10,
+          letterSpacing: 1,
+        }}
+      >
+        TOUS LES JEUX
+      </div>
+      <div style={{ opacity: 0.7, fontSize: 14, marginBottom: 8 }}>
+        Sélectionne un mode de jeu :
+      </div>
 
-      {items.map(({k,sub,rules})=>(
-        <div className="card" key={k} style={{marginBottom:12}}>
-          <div className="row-between">
-            <div>
-              <div style={{fontWeight:800,fontSize:18}}>{k}</div>
-              <div className="subtitle">{sub}</div>
-            </div>
-            <div className="row" style={{gap:8}}>
-              <button className="btn ghost" title="Règles" onClick={()=>setOpen({title:`Règles — ${k}`, text:rules})}>i</button>
-              <button className="btn primary" onClick={()=>onChoose(k as any)}>Choisir</button>
-            </div>
-          </div>
-        </div>
-      ))}
+      {/* -------- Liste des cartes de jeu -------- */}
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 520,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <GameCard
+          title="X01"
+          subtitle="301 / 501 / 701 / 1001 — double-out"
+          onClick={() => setTab("x01setup")}
+        />
 
-      <RulesModal open={!!open} onClose={()=>setOpen(null)} title={open?.title||""}>
-        {open?.text}
-      </RulesModal>
+        <GameCard
+          title="Cricket"
+          subtitle="15–20 + Bull — fermetures et points"
+          onClick={() => setTab("cricket")}
+        />
+
+        <GameCard
+          title="Killer"
+          subtitle="Double ton numéro — deviens Killer"
+          onClick={() => setTab("killer")}
+        />
+
+        <GameCard
+          title="Shanghai"
+          subtitle="Cible du tour, S/D/T — Shanghai = win"
+          onClick={() => setTab("shanghai")}
+        />
+
+        <GameCard
+          title="Battle Royale"
+          subtitle="Mode fun à plusieurs — éliminations successives"
+          onClick={() => setTab("battle")}
+          disabled
+        />
+      </div>
     </div>
+  );
+}
+
+/* ---------- Carte de sélection de jeu ---------- */
+function GameCard({
+  title,
+  subtitle,
+  onClick,
+  disabled,
+}: {
+  title: string;
+  subtitle?: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        width: "100%",
+        textAlign: "left",
+        padding: "14px 18px",
+        borderRadius: 16,
+        border: "1px solid rgba(255,255,255,.08)",
+        background: "linear-gradient(180deg, rgba(25,25,28,.6), rgba(15,15,18,.7))",
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        transition: "transform 0.15s ease",
+      }}
+      onMouseEnter={(e) =>
+        !disabled && (e.currentTarget.style.transform = "scale(1.02)")
+      }
+      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
+    >
+      <div>
+        <div style={{ fontWeight: 900, fontSize: 16 }}>{title}</div>
+        {subtitle && (
+          <div style={{ fontSize: 13, opacity: 0.75, marginTop: 2 }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
+      <span
+        style={{
+          background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+          color: "#111",
+          borderRadius: 999,
+          padding: "6px 14px",
+          fontWeight: 800,
+          fontSize: 13,
+          border: "1px solid rgba(255,180,0,.35)",
+          boxShadow: "0 0 10px rgba(240,177,42,.25)",
+        }}
+      >
+        Jouer
+      </span>
+    </button>
   );
 }

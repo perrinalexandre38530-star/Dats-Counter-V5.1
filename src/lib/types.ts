@@ -1,5 +1,5 @@
 // ============================================
-// src/lib/types.ts — version corrigée & complète
+// src/lib/types.ts — version fusionnée + X01 "CONTINUER" + stats
 // ============================================
 
 export type ID = string;
@@ -22,7 +22,7 @@ export type Profile = {
   id: ID;
   name: string;
   avatarDataUrl?: string;
-  stats?: ProfileStats | any; // garde compatibilité avec ton ancien code
+  stats?: ProfileStats | any; // compat ancien code
 };
 
 /* ===== Réglages ===== */
@@ -35,7 +35,7 @@ export type Settings = {
   randomOrder: boolean;
 };
 
-/* ===== Historique / Parties ===== */
+/* ===== Historique (modèle existant, conservé) ===== */
 export type MatchHeader = {
   id: ID;
   mode: GameMode;
@@ -65,11 +65,111 @@ export type Friend = {
   };
 };
 
+/* =========================================================
+   X01 — Politique de fin + Résultats de manche + Stats
+   ========================================================= */
+
+// Politique de fin de manche : s'arrêter au 1er checkout ou continuer
+export type FinishPolicy = "firstToZero" | "continueUntilPenultimate";
+
+// Résultat d'une manche (leg) — alimente l'overlay "Classement + Stats"
+export type LegResult = {
+  legNo: number;
+  winnerId: string;
+  order: string[];                    // ordre d’arrivée (IDs des joueurs)
+  finishedAt: number;                 // timestamp (Date.now())
+  remaining: Record<string, number>;  // score restant par joueur à la fin
+  darts: Record<string, number>;      // nb total de flèches tirées
+  visits: Record<string, number>;     // nb de volées
+  avg3: Record<string, number>;       // moyenne / 3 flèches
+  bestVisit: Record<string, number>;  // meilleure volée
+  bestCheckout: Record<string, number | null>;
+  x180: Record<string, number>;
+  doubles: Record<string, number>;
+  triples: Record<string, number>;
+  bulls: Record<string, number>;      // 25/50 cumulés
+};
+
+// Agrégat multi-manches (facultatif, si tu veux cumuler plusieurs legs)
+export type MatchStats = {
+  legs: LegResult[];
+  perPlayer: Record<string, {
+    legsWon: number;
+    darts: number;
+    visits: number;
+    avg3: number;
+    bestVisit: number;
+    bestCheckout: number | null;
+    x180: number;
+    doubles: number;
+    triples: number;
+    bulls: number;
+  }>;
+};
+
+// Règles X01 (ajout de finishPolicy)
+export type X01Rules = {
+  startScore: number;
+  doubleOut: boolean;
+  finishPolicy?: FinishPolicy; // default: "firstToZero"
+};
+
+/* =========================================================
+   Sauvegardes / Reprise des parties (non breaking)
+   ========================================================= */
+
+export type GameKind = "x01" | "cricket"; // étends si besoin
+export type SavedMatchStatus = "in_progress" | "finished";
+
+export type SavedPlayer = {
+  id: ID;                  // profile id si dispo, sinon "local:<name>"
+  name: string;
+};
+
+export type X01Snapshot = {
+  // État minimal pour reprendre
+  rules: {
+    startScore: number;    // ex. 501
+    doubleOut: boolean;
+    finishPolicy?: FinishPolicy; // 👈 conserve le choix "CONTINUER"
+    sets?: number;
+    legs?: number;
+  };
+  players: SavedPlayer[];
+  scores: number[];            // même ordre que players
+  currentIndex: number;        // joueur au trait
+  dartsThisTurn: Array<Dart | null>; // 3 slots
+  legs?: number[];             // si tu gères sets/legs
+  sets?: number[];             // idem
+};
+
+export type SavedGamePayload =
+  | { kind: "x01"; state: X01Snapshot }
+  | { kind: "cricket"; state: any }; // TODO: modèle Cricket
+
+export type SavedMatch = {
+  id: ID;                      // uuid
+  kind: GameKind;
+  status: SavedMatchStatus;
+  createdAt: number;           // Date.now()
+  updatedAt: number;
+  players: SavedPlayer[];
+  winnerId?: ID;               // si finished
+  note?: string;
+  payload: SavedGamePayload;   // snapshot pour reprise / stats
+  stats?: MatchStats;          // 👈 stats/glossaire de la partie (optionnel)
+};
+
 /* ===== Store global ===== */
 export type Store = {
   profiles: Profile[];
   settings: Settings;
+
+  /** Historique existant (si tu l’utilises déjà) */
   history: MatchRecord[];
+
+  /** NOUVEAU : sauvegardes reprenables + stats par match */
+  saved: SavedMatch[];
 
   /** Profil actuellement connecté */
   activeProfileId: ID | null;

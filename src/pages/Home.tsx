@@ -2,11 +2,16 @@ import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile } from "../lib/types";
 
-/* ---------- Props ---------- */
+/* ---------- Tabs ---------- */
 type Tab =
   | "home" | "games" | "profiles" | "friends" | "all" | "stats" | "settings"
   | "x01setup" | "x01" | "cricket" | "killer" | "shanghai" | "lobby";
 
+/* =========================================
+   Home
+   - Tolérant au chargement async (profiles peut être undefined)
+   - Boutons rapides
+   ========================================= */
 export default function Home({
   store,
   go,
@@ -18,7 +23,10 @@ export default function Home({
   showConnect?: boolean;
   onConnect?: () => void;
 }) {
-  const active = store.profiles.find(p => p.id === store.activeProfileId) || null;
+  // ✅ garde contre store/profiles/activeProfileId manquants au 1er rendu
+  const profiles = store?.profiles ?? [];
+  const activeProfileId = store?.activeProfileId ?? null;
+  const active = profiles.find((p) => p.id === activeProfileId) ?? null;
 
   return (
     <div
@@ -66,7 +74,7 @@ export default function Home({
         </h1>
 
         {/* --- soit le bouton Connexion, soit la carte dorée du profil actif --- */}
-        {(!active && showConnect) ? (
+        {!active && showConnect ? (
           <button
             className="btn primary"
             style={{
@@ -82,7 +90,7 @@ export default function Home({
         ) : active ? (
           <ActiveProfileCard
             profile={active}
-            status={store.selfStatus ?? "online"}
+            status={(store?.selfStatus as any) ?? "online"}
             onNameClick={() => go("stats")}
           />
         ) : null}
@@ -126,7 +134,7 @@ export default function Home({
   );
 }
 
-/* ---------- Carte dorée du profil connecté sous le titre ---------- */
+/* ---------- Carte dorée du profil connecté ---------- */
 function ActiveProfileCard({
   profile,
   status,
@@ -136,10 +144,10 @@ function ActiveProfileCard({
   status: "online" | "away" | "offline";
   onNameClick: () => void;
 }) {
-  const s = profile.stats || {};
+  const s = (profile as any).stats || {};
   const avg3 = isNum(s.avg3) ? (Math.round(s.avg3 * 10) / 10).toFixed(1) : "—";
-  const best = isNum(s.bestVisit) ? s.bestVisit : "—";
-  const co = isNum(s.bestCheckout) ? s.bestCheckout : "—";
+  const best = isNum(s.bestVisit) ? String(s.bestVisit) : "—";
+  const co = isNum(s.bestCheckout) ? String(s.bestCheckout) : "—";
   const w = isNum(s.wins) ? s.wins : 0;
   const l = isNum(s.losses) ? s.losses : 0;
   const wr = w + l > 0 ? Math.round((w / (w + l)) * 100) : null;
@@ -185,7 +193,7 @@ function ActiveProfileCard({
       >
         <ProfileAvatar
           size={100}
-          dataUrl={profile.avatarDataUrl}
+          dataUrl={(profile as any).avatarDataUrl}
           label={profile.name[0]?.toUpperCase()}
         />
       </div>
@@ -220,7 +228,7 @@ function ActiveProfileCard({
         {statusLabel}
       </div>
 
-      {/* Stats sous le statut */}
+      {/* Stats */}
       <div
         style={{
           display: "flex",
@@ -247,11 +255,7 @@ function StatMini({ label, value }: { label: string; value: string }) {
     <div style={{ textAlign: "center" }}>
       <div
         className="subtitle"
-        style={{
-          fontSize: 11,
-          opacity: 0.8,
-          lineHeight: 1.2,
-        }}
+        style={{ fontSize: 11, opacity: 0.8, lineHeight: 1.2 }}
       >
         {label}
       </div>
@@ -268,7 +272,6 @@ function StatMini({ label, value }: { label: string; value: string }) {
   );
 }
 
-
 /* ---------- Mini stat en ligne ---------- */
 function Stat({ title, value }: { title: string; value: string }) {
   return (
@@ -278,6 +281,7 @@ function Stat({ title, value }: { title: string; value: string }) {
     </div>
   );
 }
+
 function Dot() {
   return (
     <span
@@ -328,8 +332,7 @@ function HomeCard({
       onClick={!disabled ? onClick : undefined}
       onMouseEnter={(e) =>
         (e.currentTarget.style.boxShadow =
-          "0 0 20px rgba(240,177,42,.18), 0 10px 25px rgba(0,0,0,.4)")
-      }
+          "0 0 20px rgba(240,177,42,.18), 0 10px 25px rgba(0,0,0,.4)")}
       onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}
     >
       <div
@@ -399,7 +402,6 @@ function Icon({
           <circle {...p} cx="12" cy="8" r="3.6" />
         </svg>
       );
-
     case "target":
       return (
         <svg width={size} height={size} viewBox="0 0 24 24">
@@ -409,7 +411,6 @@ function Icon({
           <path {...p} d="M12 3v3M12 18v3M3 12h3M18 12h3" />
         </svg>
       );
-
     case "online":
       return (
         <svg width={size} height={size} viewBox="0 0 24 24">
@@ -419,7 +420,6 @@ function Icon({
           <path {...p} d="M12 2a15 15 0 0 0 0 20" />
         </svg>
       );
-
     case "stats":
       return (
         <svg width={size} height={size} viewBox="0 0 24 24">
