@@ -59,6 +59,98 @@ const initialStore: Store = {
   history: [],
 } as any;
 
+// ===== Service Worker update prompt =====
+function useServiceWorkerUpdate() {
+  const [waitingWorker, setWaitingWorker] = React.useState<ServiceWorker | null>(null);
+  const [showPrompt, setShowPrompt] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      // Quand le nouveau SW prend le relais → recharge la page
+      window.location.reload();
+    });
+
+    navigator.serviceWorker.ready.then((registration) => {
+      registration.addEventListener("updatefound", () => {
+        const newWorker = registration.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener("statechange", () => {
+          if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+            setWaitingWorker(newWorker);
+            setShowPrompt(true);
+          }
+        });
+      });
+    });
+  }, []);
+
+  function updateNow() {
+    waitingWorker?.postMessage({ type: "SKIP_WAITING" });
+    setShowPrompt(false);
+  }
+
+  return { showPrompt, updateNow, dismiss: () => setShowPrompt(false) };
+}
+
+function SWUpdateBanner() {
+  const { showPrompt, updateNow, dismiss } = useServiceWorkerUpdate();
+
+  if (!showPrompt) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+        background: "rgba(20,20,20,.9)",
+        color: "#fff",
+        padding: "10px 20px",
+        borderRadius: 12,
+        boxShadow: "0 0 15px rgba(0,0,0,.4)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+      }}
+    >
+      <span>🔄 Nouvelle version disponible</span>
+      <button
+        onClick={updateNow}
+        style={{
+          background: "linear-gradient(180deg,#ffc63a,#ffaf00)",
+          color: "#000",
+          border: "none",
+          borderRadius: 8,
+          padding: "6px 10px",
+          fontWeight: 700,
+          cursor: "pointer",
+        }}
+      >
+        Recharger
+      </button>
+      <button
+        onClick={dismiss}
+        style={{
+          background: "transparent",
+          color: "#aaa",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 18,
+          lineHeight: 1,
+        }}
+        title="Ignorer"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+// ===== fin SW update prompt =====
+
 // --------------------------------------------
 export default function App() {
   const [store, setStore] = React.useState<Store>(initialStore);
@@ -319,6 +411,8 @@ export default function App() {
         {page}
       </div>
       <BottomNav value={tab as any} onChange={(k: any) => go(k)} />
+      {/* Bannière de mise à jour PWA */}
+      <SWUpdateBanner />
     </>
   );
 }

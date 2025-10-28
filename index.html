@@ -2,15 +2,42 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+
+    <!-- ===== Thèmes & Couleurs ===== -->
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#111115" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Darts Counter" />
+    <meta
+      name="description"
+      content="Compteur de scores de fléchettes complet et ludique."
+    />
+
+    <!-- ===== PWA Manifest ===== -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- ===== Icônes (maskable & iOS) ===== -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/app-192.png" />
+    <link rel="apple-touch-icon" href="/app-512.png" />
+
+    <!-- ===== Fonts ===== -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
     <title>Darts Counter — V5 Clean</title>
   </head>
-  <body>
+
+  <body style="margin:0; background:#000;">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
