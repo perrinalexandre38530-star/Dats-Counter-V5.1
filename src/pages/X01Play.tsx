@@ -21,6 +21,8 @@ import type {
   Dart as UIDart,
   LegResult,
   FinishPolicy,
+  X01Snapshot,
+  SavedMatch,
 } from "../lib/types";
 
 import { History, makeX01RecordFromEngine } from "../lib/history";
@@ -285,13 +287,18 @@ export default function X01Play({
 }) {
   const resumeId: string | undefined = params?.resumeId;
 
-  // Essaie de charger un snapshot si on vient de l’historique
-  const savedRecord = React.useMemo(
-    () => (resumeId ? History.get(resumeId) : undefined),
-    [resumeId]
-  );
-  const resumeSnapshot =
-    savedRecord?.kind === "x01" ? savedRecord.payload?.state : undefined;
+  // Essaie de charger un snapshot si on vient de l’historique (X01 uniquement)
+  const resumeSnapshot = React.useMemo<X01Snapshot | null>(() => {
+    if (!resumeId) return null;
+  
+    // Préfère l'API typée si elle existe, sinon fallback
+    const rec: SavedMatch | null | undefined =
+      (History as any).getX01 ? (History as any).getX01(resumeId) : History.get(resumeId);
+  
+    if (!rec || rec.kind !== "x01") return null;
+    const snap = (rec.payload as any)?.state as X01Snapshot | undefined;
+    return snap ?? null;
+  }, [resumeId]);
 
   // ====== Nouvel état overlay de manche
   const [lastLegResult, setLastLegResult] = React.useState<LegResult | null>(null);
@@ -343,9 +350,7 @@ export default function X01Play({
   });
 
   // Référence vers l'id d'historique courant (pour upsert au même ID)
-  const historyIdRef = React.useRef<string | undefined>(
-    resumeId ?? savedRecord?.id
-  );
+  const historyIdRef = React.useRef<string | undefined>(resumeId);
 
   // Déclenche la navigation lorsqu’on décide de terminer (convertit bien en MatchRecord)
   const flushPendingFinish = React.useCallback(() => {
@@ -367,18 +372,30 @@ export default function X01Play({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFinish, onFinish, winner?.id]);
 
-  // --- Sauvegarde d'une manche (depuis l'overlay)
+  // --- Sauvegarde d'une manche (depuis l'overlay) — VERSION AUTONOME AVEC JOUEURS
   function handleSaveLeg(res: LegResult) {
     try {
+      // joueurs au moment de l'overlay (pour stats autonomes)
+      const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
+        id: p.id,
+        name: p.name,
+        avatarDataUrl: (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as
+          | string
+          | null,
+      }));
+
       History.upsert({
         kind: "leg",
         id: crypto.randomUUID(),
+        status: "finished",           // 👈 important pour l’affichage dans l’historique
+        players: playersNow,          // 👈 entrée autonome (overlay lisible hors match)
+        updatedAt: Date.now(),
         createdAt: Date.now(),
-        payload: res,
+        payload: res,                 // LegResult
       } as any);
+
       (navigator as any).vibrate?.(50);
-      // Remplace par ton toast si tu en as un
-      console.log("✅ Manche sauvegardée");
+      console.log("✅ Manche sauvegardée (autonome)");
     } catch (e) {
       console.warn("Impossible de sauvegarder la manche:", e);
     }
@@ -1296,7 +1313,7 @@ export default function X01Play({
         onReplay={() => {
           setOverlayOpen(false);
         }}
-        onSave={handleSaveLeg} // ⬅️ NEW: pour sauver la manche depuis l’overlay
+        onSave={handleSaveLeg} // ⬅️ NEW: pour sauver la manche depuis l’overlay (autonome)
       />
 
       {/* Bandeau fin de partie (match terminé) */}

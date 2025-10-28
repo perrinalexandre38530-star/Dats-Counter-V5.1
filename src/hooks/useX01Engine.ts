@@ -2,6 +2,7 @@
 // src/hooks/useX01Engine.ts
 // X01 engine wrapper: playTurn + safe BUST + CONTINUER + stats exclusives
 // + SKIP auto des joueurs terminés (score = 0)
+// + Reprise sûre depuis snapshot (hydrateFromSnapshot)
 // ============================================
 import * as React from "react";
 import type {
@@ -11,6 +12,7 @@ import type {
   Dart as UIDart,
   FinishPolicy,
   LegResult,
+  X01Snapshot
 } from "../lib/types";
 import type { MatchRules, GameDart, Player } from "../lib/types-game";
 import { getEngine } from "../lib/gameEngines";
@@ -95,8 +97,14 @@ function wouldBust(
   state: any,
   dartsUI: UIThrow
 ): { bust: boolean; reason: "over" | "oneLeft" | "needDouble" | null } {
-  const p = state.players[state.currentPlayerIndex];
-  const remaining = state.table[p.id]?.score ?? 0;
+  const idx = state.currentPlayerIndex ?? 0;
+  const players: Player[] = state.players || [];
+  if (!players.length || idx < 0 || idx >= players.length) {
+    // état incomplet => ne pas considérer bust pour éviter un crash
+    return { bust: false, reason: null };
+  }
+  const p = players[idx];
+  const remaining = state.table?.[p.id]?.score ?? 0;
   const sum = (dartsUI || []).reduce((s, d) => s + dartPoints(d), 0);
   const after = remaining - sum;
   const doubleOut = !!state.rules?.doubleOut;
@@ -184,7 +192,7 @@ function computeLegAggFromHistory(state: any) {
     let key = "MISS";
     if (d.bed === "OB" || d.bed === "IB") key = d.bed;
     else if (d.bed === "S" || d.bed === "D" || d.bed === "T")
-      key = `${d.bed}${d.number ?? 0}`;
+      key = `${d.bed}${d.number ?? 0}`; // <-- backticks OK
     hitsBySector[pid][key] = (hitsBySector[pid][key] || 0) + 1;
   };
 
@@ -297,6 +305,42 @@ function ensureActiveIsAlive(state: any) {
   return state;
 }
 
+/* ===== Hydratation depuis snapshot ===== */
+function hydrateFromSnapshot(
+  engine: any,
+  snap: X01Snapshot,
+  players: Player[],
+  rules: MatchRules
+) {
+  // 1) base propre du moteur
+  let s = engine.initGame(players, rules);
+
+  // 2) scores, index joueur courant
+  const ids = players.map((p) => p.id);
+  for (let i = 0; i < ids.length; i++) {
+    const pid = ids[i];
+    const score = snap.scores?.[i];
+    if (typeof score === "number" && s.table?.[pid]) {
+      s.table[pid].score = score;
+    }
+  }
+  if (typeof snap.currentIndex === "number") {
+    s.currentPlayerIndex = Math.max(0, Math.min(ids.length - 1, snap.currentIndex));
+  }
+  if (Array.isArray(snap.dartsThisTurn)) {
+    // On ne pousse rien dans l’historique (on ne sait pas si c’était validé)
+    s.turnIndex = 0;
+  }
+
+  // 3) drapeaux règles (double-out etc.)
+  if (s.rules) {
+    (s.rules as any).startingScore = snap.rules?.startScore ?? rules.startingScore;
+    (s.rules as any).doubleOut = !!snap.rules?.doubleOut;
+  }
+
+  return s;
+}
+
 /* -------- hook -------- */
 export function useX01Engine(args: {
   profiles: Profile[];
@@ -306,7 +350,7 @@ export function useX01Engine(args: {
   onFinish: (m: MatchRecord) => void;
   finishPolicy?: FinishPolicy; // "firstToZero" | "continueToPenultimate"
   onLegEnd?: (res: LegResult) => void; // overlay classement + stats
-  resume?: any; // snapshot
+  resume?: X01Snapshot | any; // snapshot
 }) {
   const {
     profiles,
@@ -331,13 +375,19 @@ export function useX01Engine(args: {
 
   const engine = React.useMemo(() => getEngine("x01"), []);
   const [startedAt] = React.useState<number>(() => Date.now());
+
+  // 🔧 INIT: si resume est un snapshot, on reconstruit un état moteur
   const [state, setState] = React.useState<any>(() => {
-    const s0 = resume ? resume : engine.initGame(players, rules);
+    let s0: any;
+    if (resume && (resume as any)?.rules?.startScore !== undefined) {
+      s0 = hydrateFromSnapshot(engine, resume as X01Snapshot, players, rules);
+    } else {
+      s0 = engine.initGame(players, rules);
+    }
     return ensureActiveIsAlive(s0);
   });
-  const [lastBust, setLastBust] = React.useState<null | { reason: string }>(
-    null
-  );
+
+  const [lastBust, setLastBust] = React.useState<null | { reason: string }>(null);
 
   // CONTINUER
   const [finishedOrder, setFinishedOrder] = React.useState<string[]>([]);
@@ -348,10 +398,16 @@ export function useX01Engine(args: {
       normalizePolicy(finishPolicy)
     );
 
-  // (re)init sur changement de paramètres
+  // (re)init sur changement de paramètres ou de snapshot
   React.useEffect(() => {
-    const s0 = resume ? resume : engine.initGame(players, rules);
-    setState(ensureActiveIsAlive(s0));
+    let s0: any;
+    if (resume && (resume as any)?.rules?.startScore !== undefined) {
+      s0 = hydrateFromSnapshot(engine, resume as X01Snapshot, players, rules);
+    } else {
+      s0 = engine.initGame(players, rules);
+    }
+    s0 = ensureActiveIsAlive(s0);
+    setState(s0);
     setLastBust(null);
     setFinishedOrder([]);
     setPendingFirstWin(null);
@@ -377,18 +433,16 @@ export function useX01Engine(args: {
       remaining,
       darts: agg.darts,
       visits: agg.visits,
-      avg3: agg.avg3, // moyenne par volée (affichée comme Moy/3)
+      avg3: agg.avg3,
       bestVisit: agg.bestVisit,
       bestCheckout: agg.bestCheckout,
       x180: agg.x180,
       doubles: agg.doubles,
       triples: agg.triples,
       bulls: agg.bulls,
-      // NEW → branchements onglets
       visitSumsByPlayer: agg.visitSumsByPlayer,
       checkoutDartsByPlayer: agg.checkoutDartsByPlayer,
       hitsBySector: agg.hitsBySector,
-      // NEW → compteurs exclusifs visibles dans Rapides
       h60: agg.h60,
       h100: agg.h100,
       h140: agg.h140,
@@ -428,13 +482,13 @@ export function useX01Engine(args: {
 
       if (check.bust) {
         // BUST => on conserve l'historique, on passe au joueur suivant (skip finis)
-        const curr = prev.players[prev.currentPlayerIndex];
-        const historyEntry = { playerId: curr.id, darts: uiToGameDarts(throwUI) };
+        const curr = prev.players?.[prev.currentPlayerIndex];
+        const historyEntry = { playerId: curr?.id, darts: uiToGameDarts(throwUI) };
 
         let next = {
           ...prev,
           history: [...(prev.history || []), historyEntry],
-          currentPlayerIndex: (prev.currentPlayerIndex + 1) % prev.players.length,
+          currentPlayerIndex: (prev.currentPlayerIndex + 1) % (prev.players?.length || 1),
           turnIndex: 0,
         };
         next = ensureActiveIsAlive(next);
@@ -452,8 +506,8 @@ export function useX01Engine(args: {
       try {
         const last = (s2.history || [])[Math.max(0, (s2.history || []).length - 1)];
         const pid: string | undefined = last?.playerId;
-        if (pid) {
-          const scoreNow = s2.table?.[pid]?.score;
+        if (pid && s2.table?.[pid]) {
+          const scoreNow = s2.table[pid].score;
           const justFinished = scoreNow === 0;
 
           if (justFinished) {

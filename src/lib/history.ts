@@ -31,32 +31,73 @@ function writeAll(list: SavedMatch[]) {
   localStorage.setItem(KEY, JSON.stringify(list));
 }
 
+function now() {
+  return Date.now();
+}
+
 /* ---------- API publique ---------- */
 export const History = {
+  /** Liste triée, la plus récente en premier */
   list(): SavedMatch[] {
-    return readAll().sort((a, b) => b.updatedAt - a.updatedAt);
+    return readAll().sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   },
-  get(id: string): SavedMatch | undefined {
-    return readAll().find((r) => r.id === id);
+
+  /** Récupère un match par id. Ne renvoie **jamais** undefined. */
+  get(id: string): SavedMatch | null {
+    const rec = readAll().find((r) => r.id === id);
+    return rec ?? null;
   },
-  upsert(rec: SavedMatch) {
+
+  /** Récupère un match X01 (ou null si absent / mauvais type). */
+  getX01(id: string): SavedMatch | null {
+    const rec = this.get(id);
+    if (!rec || rec.kind !== "x01") return null;
+    return rec;
+  },
+
+  /** Crée ou met à jour un match. Renvoie la version effectivement stockée. */
+  upsert(rec: SavedMatch): SavedMatch {
     const all = readAll();
-    const i = all.findIndex((r) => r.id === rec.id);
-    if (i >= 0) all[i] = rec;
-    else all.unshift(rec);
+
+    // garde-fou timestamps + id
+    const stored: SavedMatch = {
+      ...rec,
+      id: rec.id || genId(),
+      createdAt: rec.createdAt ?? now(),
+      updatedAt: now(),
+    };
+
+    const i = all.findIndex((r) => r.id === stored.id);
+    if (i >= 0) all[i] = stored;
+    else all.unshift(stored);
+
     writeAll(all);
+    return stored;
   },
-  update(id: string, mut: (r: SavedMatch) => SavedMatch) {
+
+  /** Modifie un match par mutation. Renvoie la version enregistrée ou null. */
+  update(id: string, mut: (r: SavedMatch) => SavedMatch): SavedMatch | null {
     const all = readAll();
     const i = all.findIndex((r) => r.id === id);
-    if (i >= 0) {
-      all[i] = mut({ ...all[i], updatedAt: Date.now() });
-      writeAll(all);
-    }
+    if (i < 0) return null;
+
+    const next = mut({ ...all[i] });
+    const stored: SavedMatch = {
+      ...next,
+      id,
+      createdAt: next.createdAt ?? all[i].createdAt ?? now(),
+      updatedAt: now(),
+    };
+
+    all[i] = stored;
+    writeAll(all);
+    return stored;
   },
+
   remove(id: string) {
     writeAll(readAll().filter((r) => r.id !== id));
   },
+
   clear() {
     writeAll([]);
   },
@@ -100,12 +141,14 @@ export function makeX01RecordFromEngine(params: {
     sets: engine.sets,
   };
 
+  const when = now();
+
   const rec: SavedMatch = {
-    id: existingId ?? genId(),              // <-- ici
+    id: existingId ?? genId(),
     kind: "x01",
     status: engine.winnerId ? "finished" : "in_progress",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: when,
+    updatedAt: when,
     players,
     winnerId: engine.winnerId ?? undefined,
     payload: { kind: "x01", state: snapshot },

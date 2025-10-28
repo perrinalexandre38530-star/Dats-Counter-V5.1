@@ -283,8 +283,7 @@ export default function App() {
       case "stats":
         page = (
           <StatsHub
-            store={store}
-            go={go} // ← pour permettre Reprendre & Voir stats
+            go={go} // ← pour permettre Reprendre & Voir stats (transmet { resumeId } à X01)
           />
         );
         break;
@@ -358,7 +357,7 @@ export default function App() {
               playerIds={x01Config?.playerIds ?? []}
               start={x01Config?.start ?? store.settings.defaultX01}
               doubleOut={x01Config?.doubleOut ?? store.settings.doubleOut}
-              params={routeParams}               // ← pour resumeId
+              params={routeParams}               // ← transporte { resumeId } pour la reprise
               onFinish={(m) => pushHistory(m)}
               onExit={() => go("x01setup")}
             />
@@ -381,6 +380,7 @@ export default function App() {
             }}
           />
         );
+        // Place-holder de jeu Cricket :
         page = <CricketPlay playerIds={[]} onFinish={pushHistory} />;
         break;
 
