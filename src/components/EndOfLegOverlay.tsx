@@ -22,6 +22,7 @@ import {
   Bar,
   CartesianGrid,
 } from "recharts";
+import ResponsiveChartBox from "./ResponsiveChartBox";
 
 /* ---- Types légers (compat) ---- */
 type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };
@@ -97,8 +98,7 @@ export default function EndOfLegOverlay({
 
   // État accordéon (un seul panneau ouvert)
   const [openKey, setOpenKey] = React.useState<string>("rapides");
-  const toggle = (key: string) =>
-    setOpenKey((k) => (k === key ? "" : key));
+  const toggle = (key: string) => setOpenKey((k) => (k === key ? "" : key));
 
   // Sélection joueur pour les graphiques
   const [selectedPid, setSelectedPid] = React.useState<string>(order[0] || "");
@@ -129,7 +129,7 @@ export default function EndOfLegOverlay({
       if (k === "IB" || k === "OB") {
         map["25"] += v;
         continue;
-        }
+      }
       // clefs S20/D20/T20 -> extraire numéro de secteur
       const m = k.match(/^[SDT](\d{1,2})$/);
       if (m) {
@@ -163,7 +163,7 @@ export default function EndOfLegOverlay({
         Outer: (s === "25" ? get("OB") : 0) + get(`S${s}`),
         Double: get(`D${s}`),
         Triple: get(`T${s}`),
-        Miss: s === top[0] ? (hits["MISS"] || 0) : 0, // on met MISS sur une seule barre pour visual
+        Miss: s === top[0] ? hits["MISS"] || 0 : 0, // on met MISS sur une seule barre pour visual
       };
     });
 
@@ -370,9 +370,7 @@ export default function EndOfLegOverlay({
                           <b>{v}</b>
                         </div>
                       ))}
-                      {entries.length === 0 && (
-                        <span style={{ color: "#cfd3dd" }}>—</span>
-                      )}
+                      {entries.length === 0 && <span style={{ color: "#cfd3dd" }}>—</span>}
                     </div>
                   </div>
                 );
@@ -428,8 +426,8 @@ export default function EndOfLegOverlay({
                   <div style={{ fontWeight: 800, color: "#e9ebf2", marginBottom: 6 }}>
                     Volume par secteur
                   </div>
-                  <div style={{ width: "100%", height: 260 }}>
-                    <ResponsiveContainer>
+                  <ResponsiveChartBox active={openKey === "charts"} minHeight={260}>
+                    <ResponsiveContainer width="100%" height="100%">
                       <RadarChart data={radarData}>
                         <PolarGrid />
                         <PolarAngleAxis dataKey="sector" />
@@ -442,7 +440,7 @@ export default function EndOfLegOverlay({
                         />
                       </RadarChart>
                     </ResponsiveContainer>
-                  </div>
+                  </ResponsiveChartBox>
                 </div>
 
                 {/* Histogramme empilé */}
@@ -450,8 +448,8 @@ export default function EndOfLegOverlay({
                   <div style={{ fontWeight: 800, color: "#e9ebf2", marginBottom: 6 }}>
                     Répartition par anneau (top secteurs)
                   </div>
-                  <div style={{ width: "100%", height: 260 }}>
-                    <ResponsiveContainer>
+                  <ResponsiveChartBox active={openKey === "charts"} minHeight={260}>
+                    <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={barData}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="sector" />
@@ -465,7 +463,7 @@ export default function EndOfLegOverlay({
                         <Bar dataKey="Miss" />
                       </BarChart>
                     </ResponsiveContainer>
-                  </div>
+                  </ResponsiveChartBox>
                 </div>
               </div>
             </div>
