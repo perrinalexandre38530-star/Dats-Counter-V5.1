@@ -9,11 +9,14 @@
 // + CONTINUER jusqu’à l’avant-dernier + Overlay Classement/Stats de manche
 // + Garde-fou: différer onFinish pour laisser voir le classement
 // + Construction/sauvegarde Stats de match (saveMatchStats)
+// + Commit auto des stats globales à chaque fin de manche (commitLegStatsOnce)
+// + SFX intégrés (double/triple/bull/DBull/180 + touches Keypad)
 // ============================================
 import React from "react";
 import { useX01Engine } from "../hooks/useX01Engine";
 import Keypad from "../components/Keypad";
 import EndOfLegOverlay from "../components/EndOfLegOverlay";
+import { playSound } from "../lib/sound";
 
 import type {
   Profile,
@@ -26,8 +29,9 @@ import type {
 } from "../lib/types";
 
 import { History, makeX01RecordFromEngine } from "../lib/history";
-import { saveMatchStats } from "../lib/stats"; // NEW
-import type { X01MatchRecord, MatchStandingRow } from "../lib/types"; // NEW
+import { commitLegStatsOnce } from "../lib/statsOnce";
+import { saveMatchStats } from "../lib/stats";
+import type { X01MatchRecord, MatchStandingRow } from "../lib/types";
 
 /* ---- Types internes légers ---- */
 type EnginePlayer = { id: string; name: string };
@@ -290,11 +294,10 @@ export default function X01Play({
   // Essaie de charger un snapshot si on vient de l’historique (X01 uniquement)
   const resumeSnapshot = React.useMemo<X01Snapshot | null>(() => {
     if (!resumeId) return null;
-  
-    // Préfère l'API typée si elle existe, sinon fallback
+
     const rec: SavedMatch | null | undefined =
       (History as any).getX01 ? (History as any).getX01(resumeId) : History.get(resumeId);
-  
+
     if (!rec || rec.kind !== "x01") return null;
     const snap = (rec.payload as any)?.state as X01Snapshot | undefined;
     return snap ?? null;
@@ -303,6 +306,61 @@ export default function X01Play({
   // ====== Nouvel état overlay de manche
   const [lastLegResult, setLastLegResult] = React.useState<LegResult | null>(null);
   const [overlayOpen, setOverlayOpen] = React.useState(false);
+
+  // 🔗 Stats: commit une seule fois à la fin de chaque manche
+  React.useEffect(() => {
+    const res = lastLegResult;
+    if (!res) return;
+
+    // joueurs actuels (id + name) depuis le moteur
+    const playersNow = ((state.players || []) as { id: string; name: string }[]).map((p) => ({
+      id: p.id,
+      name: p.name || "Player",
+    }));
+
+    // id stable de manche (reprise/hard refresh = pas de doublons)
+    const legId = (historyIdRef.current || "local") + "::leg#" + String(res.legNo ?? 1);
+
+    // points total par joueur = somme des volées (si dispo) sinon avg3 * visits
+    const sumPer = (pid: string) => {
+      const arr = (res as any).visitSumsByPlayer?.[pid] as number[] | undefined;
+      if (Array.isArray(arr) && arr.length) return arr.reduce((s, x) => s + x, 0);
+      const v = (res as any).visits?.[pid] ?? 0;
+      const a = (res as any).avg3?.[pid] ?? 0;
+      return Math.round(v * a);
+    };
+
+    const perPlayer: Record<string, any> = {};
+    for (const p of playersNow) {
+      const pid = p.id;
+      perPlayer[pid] = {
+        dartsThrown: (res as any).darts?.[pid] ?? 0,
+        pointsScored: sumPer(pid),
+        visits: (res as any).visits?.[pid] ?? 0,
+        avg3: (res as any).avg3?.[pid] ?? 0,
+        bestVisit: (res as any).bestVisit?.[pid] ?? 0,
+        highestCheckout: (res as any).bestCheckout?.[pid] ?? 0,
+        tons60: (res as any).h60?.[pid] ?? 0,
+        tons100: (res as any).h100?.[pid] ?? 0,
+        tons140: (res as any).h140?.[pid] ?? 0,
+        ton180: (res as any).h180?.[pid] ?? 0,
+        checkoutAttempts: 0,
+        checkoutHits: 0,
+        legsPlayed: 1,
+        legsWon: res.winnerId === pid ? 1 : 0,
+      };
+    }
+
+    commitLegStatsOnce({
+      legId,
+      kind: "x01",
+      finishedAt: res.finishedAt ?? Date.now(),
+      players: playersNow,
+      winnerId: res.winnerId,
+      perPlayer,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastLegResult]);
 
   // ====== NEW: onFinish différé (empêche navigation auto)
   const [pendingFinish, setPendingFinish] = React.useState<MatchRecord | null>(null);
@@ -316,13 +374,12 @@ export default function X01Play({
   const {
     state,
     currentPlayer,
-    turnIndex: _turnIndex, // évite TS6133
+    turnIndex: _turnIndex,
     scoresByPlayer,
     isOver,
     winner,
     submitThrowUI,
     undoLast,
-    // ↓ ajouts du hook modifié
     pendingFirstWin,
     continueAfterFirst,
     endNow,
@@ -332,7 +389,6 @@ export default function X01Play({
     playerIds,
     start,
     doubleOut,
-    // Interception d'onFinish pour ne pas naviguer immédiatement
     onFinish: (m: MatchRecord) => {
       if (overlayOpen || pendingFinish) {
         setPendingFinish(m);
@@ -340,7 +396,7 @@ export default function X01Play({
         onFinish(m);
       }
     },
-    // @ts-ignore — si la signature du hook n’a pas "resume", il ignorera
+    // @ts-ignore
     resume: resumeSnapshot,
     finishPolicy: defaultFinishPolicy,
     onLegEnd: (res: LegResult) => {
@@ -352,6 +408,61 @@ export default function X01Play({
   // Référence vers l'id d'historique courant (pour upsert au même ID)
   const historyIdRef = React.useRef<string | undefined>(resumeId);
 
+  // 🔐 ID de match stable pour les IDs de legs
+  const matchIdRef = React.useRef<string>(
+    resumeId ??
+      (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Date.now()))
+  );
+
+  // ✅ Commit auto des stats globales à chaque fin de manche (anti-doublon inclus)
+  React.useEffect(() => {
+    if (!lastLegResult) return;
+    const res = lastLegResult;
+
+    // joueurs au moment de la fin de manche
+    const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
+      id: p.id,
+      name: p.name,
+    }));
+
+    const legId = `${matchIdRef.current || "local"}::leg#${res.legNo || 1}`;
+
+    const perPlayer: Record<string, any> = {};
+    const ids = Object.keys(res.darts || {});
+    for (const pid of ids) {
+      const dartsThrown = (res.darts as any)?.[pid] || 0;
+      const visits = (res.visits as any)?.[pid] || Math.ceil(dartsThrown / 3);
+      const avg3 = (res.avg3 as any)?.[pid] || 0;
+      const pointsScored = Math.round(avg3 * visits);
+
+      perPlayer[pid] = {
+        dartsThrown,
+        pointsScored,
+        visits,
+        avg3,
+        bestVisit: (res.bestVisit as any)?.[pid] || 0,
+        highestCheckout: (res.bestCheckout as any)?.[pid] || 0,
+        tons60: (res.h60 as any)?.[pid] || 0,
+        tons100: (res.h100 as any)?.[pid] || 0,
+        tons140: (res.h140 as any)?.[pid] || 0,
+        ton180: (res.h180 as any)?.[pid] || 0,
+        checkoutAttempts: 0,
+        checkoutHits: 0,
+        legsPlayed: 1,
+        legsWon: res.winnerId === pid ? 1 : 0,
+      };
+    }
+
+    commitLegStatsOnce({
+      legId,
+      kind: "x01",
+      finishedAt: res.finishedAt ?? Date.now(),
+      players: playersNow,
+      winnerId: res.winnerId,
+      perPlayer,
+    });
+  }, [lastLegResult, state.players]);
+
   // Déclenche la navigation lorsqu’on décide de terminer (convertit bien en MatchRecord)
   const flushPendingFinish = React.useCallback(() => {
     if (pendingFinish) {
@@ -361,7 +472,6 @@ export default function X01Play({
       onFinish(m);
       return;
     }
-    // fallback: fabrique un record final si rien n’est en attente
     const rec: MatchRecord = makeX01RecordFromEngine({
       engine: buildEngineLike([], winner?.id ?? null),
       existingId: historyIdRef.current,
@@ -375,23 +485,24 @@ export default function X01Play({
   // --- Sauvegarde d'une manche (depuis l'overlay) — VERSION AUTONOME AVEC JOUEURS
   function handleSaveLeg(res: LegResult) {
     try {
-      // joueurs au moment de l'overlay (pour stats autonomes)
       const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
         id: p.id,
         name: p.name,
-        avatarDataUrl: (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as
-          | string
-          | null,
+        avatarDataUrl:
+          (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as string | null,
       }));
 
       History.upsert({
         kind: "leg",
-        id: crypto.randomUUID(),
-        status: "finished",           // 👈 important pour l’affichage dans l’historique
-        players: playersNow,          // 👈 entrée autonome (overlay lisible hors match)
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : String(Date.now()),
+        status: "finished",
+        players: playersNow,
         updatedAt: Date.now(),
         createdAt: Date.now(),
-        payload: res,                 // LegResult
+        payload: res,
       } as any);
 
       (navigator as any).vibrate?.(50);
@@ -405,15 +516,12 @@ export default function X01Play({
   const [multiplier, setMultiplier] = React.useState<1 | 2 | 3>(1);
   const [playersOpen, setPlayersOpen] = React.useState(true);
 
-  // dernières volées + BUST
   const [lastByPlayer, setLastByPlayer] = React.useState<Record<string, UIDart[]>>({});
   const [lastBustByPlayer, setLastBustByPlayer] = React.useState<Record<string, boolean>>({});
 
-  // stats live
   const [dartsCount, setDartsCount] = React.useState<Record<string, number>>({});
   const [pointsSum, setPointsSum] = React.useState<Record<string, number>>({});
 
-  // ---- NEW: états de stats par joueur (pour la page Stats)
   const [visitsCount, setVisitsCount] = React.useState<Record<string, number>>({});
   const [bestVisitByPlayer, setBestVisitByPlayer] = React.useState<Record<string, number>>({});
   const [hitsByPlayer, setHitsByPlayer] = React.useState<
@@ -432,50 +540,88 @@ export default function X01Play({
     () => createAudio(["/sounds/dart-hit.mp3", "/sounds/dart-hit.ogg"]),
     []
   );
-  const bustSnd = React.useMemo(
-    () => createAudio(["/sounds/bust.mp3", "/sounds/bust.ogg"]),
-    []
-  );
+  const bustSnd = React.useMemo(() => createAudio(["/sounds/bust.mp3", "/sounds/bust.ogg"]), []);
   const voiceOn = React.useMemo<boolean>(
     () => (safeGetLocalStorage("opt_voice") ?? "true") === "true",
     []
   );
 
-  /* Current / remaining */
+  // —— Helper SFX: joue le bon son selon la fléchette + détecte 180 de la volée
+  function playDartSfx(d: UIDart, nextThrow: UIDart[]) {
+    // 180 prioritaire si la 3e fléchette amène exactement 180
+    const visitSum = nextThrow.reduce((s, x) => s + dartValue(x), 0);
+    if (nextThrow.length === 3 && visitSum === 180) {
+      playSound("180");
+      return;
+    }
+    // bull / double bull
+    if (d.v === 25 && d.mult === 2) {
+      playSound("doublebull");
+      return;
+    }
+    if (d.v === 25 && d.mult === 1) {
+      playSound("bull");
+      return;
+    }
+    // doubles / triples
+    if (d.mult === 3) {
+      playSound("triple");
+      return;
+    }
+    if (d.mult === 2) {
+      playSound("double");
+      return;
+    }
+    // défaut
+    playSound("dart-hit");
+  }
+
   const profileById = React.useMemo(() => {
     const map: Record<string, Profile> = {};
     for (const p of profiles) map[p.id] = p;
     return map;
   }, [profiles]);
 
-  const currentRemaining =
-    scoresByPlayer[(currentPlayer?.id as string) || ""] ?? start;
+  const currentRemaining = scoresByPlayer[(currentPlayer?.id as string) || ""] ?? start;
   const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
   const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
 
-  /* Handlers entrée */
   function handleNumber(n: number) {
     if (currentThrow.length >= 3) return;
-    setCurrentThrow((t) => [...t, { v: n, mult: n === 0 ? 1 : multiplier }]);
-    setMultiplier(1);
+    const d: UIDart = { v: n, mult: n === 0 ? 1 : multiplier };
+    const next = [...currentThrow, d];
+
+    // 🔊 SON contextuel (uniquement quand la fléchette est ajoutée)
+    playDartSfx(d, next);
+
+    // Optionnel : petit "hit" générique
     try {
       dartHit.currentTime = 0;
       dartHit.play();
     } catch {}
     (navigator as any).vibrate?.(25);
+
+    setCurrentThrow(next);
+    setMultiplier(1);
   }
   function handleBull() {
     if (currentThrow.length >= 3) return;
-    setCurrentThrow((t) => [...t, { v: 25, mult: multiplier === 2 ? 2 : 1 }]);
-    setMultiplier(1);
+    const d: UIDart = { v: 25, mult: multiplier === 2 ? 2 : 1 };
+    const next = [...currentThrow, d];
+
+    // 🔊 SON contextuel (uniquement quand la fléchette est ajoutée)
+    playDartSfx(d, next);
+
     try {
       dartHit.currentTime = 0;
       dartHit.play();
     } catch {}
     (navigator as any).vibrate?.(25);
+
+    setCurrentThrow(next);
+    setMultiplier(1);
   }
 
-  /** Construit un "engine-like" minimal pour l'API makeX01RecordFromEngine */
   function buildEngineLike(dartsThisTurn: UIDart[], winnerId?: string | null) {
     const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map(
       (p: EnginePlayer) => ({ id: p.id, name: p.name })
@@ -494,7 +640,6 @@ export default function X01Play({
     };
   }
 
-  /** Sauvegarde "in progress" après chaque validation de volée */
   function persistAfterThrow(dartsJustThrown: UIDart[]) {
     const rec: MatchRecord = makeX01RecordFromEngine({
       engine: buildEngineLike(dartsJustThrown, null),
@@ -504,7 +649,6 @@ export default function X01Play({
     historyIdRef.current = rec.id;
   }
 
-  /** Sauvegarde "finished" quand la partie se termine */
   function persistOnFinish() {
     const rec: MatchRecord = makeX01RecordFromEngine({
       engine: buildEngineLike([], winner?.id ?? null),
@@ -514,7 +658,6 @@ export default function X01Play({
     historyIdRef.current = rec.id;
   }
 
-  // === Fin de match complète : construction du record + sauvegarde stats ===
   function onMatchEnd() {
     const playersArr = ((state.players || []) as EnginePlayer[]) || [];
     const standing: MatchStandingRow[] = playersArr
@@ -547,10 +690,13 @@ export default function X01Play({
           bulls: impactByPlayer[p.id]?.bulls || 0,
         },
       }))
-      .sort((a, b) => (a.score - b.score) || (b.avg3 - a.avg3));
+      .sort((a, b) => a.score - b.score || b.avg3 - a.avg3);
 
     const rec: X01MatchRecord = {
-      id: crypto.randomUUID(),
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : String(Date.now()),
       createdAt: Date.now(),
       rules: {
         x01Start: start,
@@ -563,7 +709,7 @@ export default function X01Play({
       perPlayerHitBuckets: perPlayerBuckets,
     };
 
-    saveMatchStats(rec);
+    saveMatchStats(rec as any);
   }
 
   function validateThrow() {
@@ -576,7 +722,6 @@ export default function X01Play({
 
     const ptsForStats = willBust ? 0 : volleyPts;
 
-    // --- mise à jour stats live ---
     setDartsCount((m) => ({
       ...m,
       [currentPlayer.id]: (m[currentPlayer.id] || 0) + currentThrow.length,
@@ -594,7 +739,6 @@ export default function X01Play({
       [currentPlayer.id]: Math.max(m[currentPlayer.id] || 0, volleyPts),
     }));
 
-    // séries de hits (60/100/140/180)
     setHitsByPlayer((m) => {
       const prev = m[currentPlayer.id] || { h60: 0, h100: 0, h140: 0, h180: 0 };
       const add = { ...prev };
@@ -605,36 +749,37 @@ export default function X01Play({
       return { ...m, [currentPlayer.id]: add };
     });
 
-    // impact doubles / triples / bulls
     setImpactByPlayer((m) => {
       const add = m[currentPlayer.id] || { doubles: 0, triples: 0, bulls: 0 };
       for (const d of currentThrow) {
-        if (d.v === 25) add.bulls += d.mult === 2 ? 1 : 0.5; // pondération douce
+        if (d.v === 25) add.bulls += d.mult === 2 ? 1 : 0.5;
         if (d.mult === 2) add.doubles++;
         if (d.mult === 3) add.triples++;
       }
       return { ...m, [currentPlayer.id]: add };
     });
 
-    // buckets par joueur (exemple basique)
     setPerPlayerBuckets((m) => {
       const cur = m[currentPlayer.id] || {};
-      const legKey = "leg-1"; // TODO: clé réelle de la manche
+      const legKey = "leg-1";
       const b = cur[legKey] || { inner: 0, outer: 0, double: 0, triple: 0, miss: 0 };
       for (const d of currentThrow) {
         if (d.v === 0) b.miss++;
-        else if (d.v === 25) (d.mult === 2 ? (b.inner++, b.double++) : b.outer++);
-        else if (d.mult === 2) b.double++;
+        else if (d.v === 25) {
+          if (d.mult === 2) {
+            b.inner++;
+            b.double++;
+          } else {
+            b.outer++;
+          }
+        } else if (d.mult === 2) b.double++;
         else if (d.mult === 3) b.triple++;
         else b.outer++;
       }
       return { ...m, [currentPlayer.id]: { ...cur, [legKey]: b } };
     });
 
-    // Sauvegarde avant reset (inclure la volée jouée)
     persistAfterThrow(currentThrow);
-
-    // Envoi au moteur
     submitThrowUI(currentThrow);
 
     setLastByPlayer((m) => ({ ...m, [currentPlayer.id]: currentThrow }));
@@ -646,10 +791,13 @@ export default function X01Play({
         bustSnd.play();
       } catch {}
       (navigator as any).vibrate?.([120, 60, 140]);
+      // playSound("bust"); // éviter le double-play si bust.mp3 déjà joué ci-dessus
     } else if (voiceOn && "speechSynthesis" in window) {
       const name = currentPlayer.name || "";
       const ptsLabel = volleyPts === 1 ? "point" : "points";
-      const u = new SpeechSynthesisUtterance(`${name}, ${volleyPts} ${ptsLabel}`);
+      const u = new SpeechSynthesisUtterance(
+        `${name}, ${ptsLabel === "point" ? volleyPts + " point" : volleyPts + " points"}`
+      );
       u.rate = 1;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(u);
@@ -659,14 +807,17 @@ export default function X01Play({
     setMultiplier(1);
   }
   function handleBackspace() {
+    // 🔊 son discret pour backspace
+    playSound("dart-hit");
     setCurrentThrow((t) => t.slice(0, -1));
   }
   function handleCancel() {
+    // 🔊 son pour annulation / undo
+    playSound("bust");
     if (currentThrow.length) setCurrentThrow((t) => t.slice(0, -1));
     else undoLast?.();
   }
 
-  /* Classement live */
   const liveRanking = React.useMemo<RankItem[]>(() => {
     const items: RankItem[] = ((state.players || []) as EnginePlayer[]).map(
       (p: EnginePlayer) => ({
@@ -729,7 +880,6 @@ export default function X01Play({
     };
   }
 
-  /* UI — styles utilitaires */
   const goldBtn: React.CSSProperties = {
     borderRadius: 10,
     padding: "6px 12px",
@@ -741,7 +891,6 @@ export default function X01Play({
     cursor: "pointer",
   };
 
-  /* Guard */
   if (!state.players?.length) {
     return (
       <div className="container" style={{ padding: 16 }}>
@@ -757,31 +906,37 @@ export default function X01Play({
   }
 
   const currentAvatar =
-    (currentPlayer && (profileById[currentPlayer.id]?.avatarDataUrl as string | null)) ??
-    null;
+    (currentPlayer && (profileById[currentPlayer.id]?.avatarDataUrl as string | null)) ?? null;
 
   const curDarts = currentPlayer ? dartsCount[currentPlayer.id] || 0 : 0;
   const curPts = currentPlayer ? pointsSum[currentPlayer.id] || 0 : 0;
   const curM3D = curDarts > 0 ? ((curPts / curDarts) * 3).toFixed(2) : "0.00";
 
-  // === TTS FIN DE PARTIE + sauvegarde finale + build stats ===
   const prevIsOver = React.useRef(false);
   React.useEffect(() => {
     const justFinished = !prevIsOver.current && isOver;
     prevIsOver.current = isOver;
 
     if (justFinished) {
-      // 1) fige l'historique
       persistOnFinish();
-      // 2) construit/sauvegarde le résumé + stats (page Stats)
       onMatchEnd();
     }
 
     if (!justFinished || !voiceOn || !("speechSynthesis" in window)) return;
 
-    const ords = ["", "Deuxième", "Troisième", "Quatrième", "Cinquième", "Sixième", "Septième", "Huitième"];
+    const ords = [
+      "",
+      "Deuxième",
+      "Troisième",
+      "Quatrième",
+      "Cinquième",
+      "Sixième",
+      "Septième",
+      "Huitième",
+    ];
     const ordered = [...liveRanking].sort((a, b) => {
-      const az = a.score === 0, bz = b.score === 0;
+      const az = a.score === 0,
+        bz = b.score === 0;
       if (az && !bz) return -1;
       if (!az && bz) return 1;
       return a.score - b.score;
@@ -800,11 +955,105 @@ export default function X01Play({
     window.speechSynthesis.speak(u);
   }, [isOver, liveRanking, voiceOn, winner?.id]);
 
-  // nombre de fléchettes restantes pour le rendu du checkout
+  // ===== [NOUVEAU] Builder de résultat final si le moteur n'en fournit pas
+  function buildFinalLegResultFromState(): LegResult {
+    const playersArr = ((state.players || []) as { id: string; name: string }[]);
+    const remaining: Record<string, number> = {};
+    const darts: Record<string, number> = {};
+    const visits: Record<string, number> = {};
+    const avg3: Record<string, number> = {};
+    const bestVisit: Record<string, number> = {};
+    const bestCheckout: Record<string, number> = {};
+    const h60: Record<string, number> = {};
+    const h100: Record<string, number> = {};
+    const h140: Record<string, number> = {};
+    const h180: Record<string, number> = {};
+
+    for (const p of playersArr) {
+      const pid = p.id;
+      const rem = scoresByPlayer[pid] ?? start;
+      const dCount = dartsCount[pid] || 0;
+      const pSum = pointsSum[pid] || 0;
+      const a3d = dCount > 0 ? (pSum / dCount) * 3 : 0;
+
+      remaining[pid] = rem;
+      darts[pid] = dCount;
+      visits[pid] = visitsCount[pid] || Math.ceil(dCount / 3);
+      avg3[pid] = Math.round(a3d * 100) / 100;
+      bestVisit[pid] = bestVisitByPlayer[pid] || 0;
+      bestCheckout[pid] = 0;
+      h60[pid] = hitsByPlayer[pid]?.h60 || 0;
+      h100[pid] = hitsByPlayer[pid]?.h100 || 0;
+      h140[pid] = hitsByPlayer[pid]?.h140 || 0;
+      h180[pid] = hitsByPlayer[pid]?.h180 || 0;
+    }
+
+    // Classement: 0 en premier, sinon score croissant, puis meilleure avg3
+    const order = [...playersArr]
+      .sort((a, b) => {
+        const as = remaining[a.id] ?? start;
+        const bs = remaining[b.id] ?? start;
+        if (as === 0 && bs !== 0) return -1;
+        if (bs === 0 && as !== 0) return 1;
+        if (as !== bs) return as - bs;
+        return (avg3[b.id] ?? 0) - (avg3[a.id] ?? 0);
+      })
+      .map((p) => p.id);
+
+    const winnerId = order[0] || playersArr[0]?.id || "";
+
+    return {
+      legNo: 1,
+      winnerId,
+      order,
+      finishedAt: Date.now(),
+      remaining,
+      darts,
+      visits,
+      avg3,
+      bestVisit,
+      bestCheckout,
+      h60,
+      h100,
+      h140,
+      h180,
+    } as LegResult;
+  }
+
   const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
 
-  // bandeau fin de partie visible seulement si pas en “continuer”/modale
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
+
+  // ===== Musique de fond "victoire" =====
+  const [bgMusic] = React.useState(() => new Audio("/sounds/victory.mp3"));
+  React.useEffect(() => {
+    if (overlayOpen || showEndBanner) {
+      try {
+        bgMusic.loop = true;
+        bgMusic.volume = 0.6;
+        bgMusic.currentTime = 0;
+        bgMusic.play().catch(() => {});
+      } catch {}
+    } else {
+      try {
+        bgMusic.pause();
+        bgMusic.currentTime = 0;
+      } catch {}
+    }
+  }, [overlayOpen, showEndBanner, bgMusic]);
+
+  // ===== [NOUVEAU] Forcer l'overlay en fin de partie (y compris à 2 joueurs)
+  React.useEffect(() => {
+    if (!isOver) return;
+    if (!overlayOpen) setOverlayOpen(true);
+    if (!lastLegResult) {
+      try {
+        const fallback = buildFinalLegResultFromState();
+        setLastLegResult(fallback);
+      } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOver]);
 
   return (
     <div
@@ -922,9 +1171,7 @@ export default function X01Play({
                   currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
                 const wouldBust =
                   afterNow < 0 ||
-                  (doubleOut &&
-                    afterNow === 0 &&
-                    !isDoubleFinish(currentThrow.slice(0, i + 1)));
+                  (doubleOut && afterNow === 0 && !isDoubleFinish(currentThrow.slice(0, i + 1)));
                 const st = chipStyle(d, wouldBust);
                 return (
                   <span
@@ -1040,8 +1287,7 @@ export default function X01Play({
       {/* Bloc Joueurs (déroulant) */}
       <div
         style={{
-          background:
-            "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
+          background: "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 18,
           padding: 12,
@@ -1256,8 +1502,8 @@ export default function X01Play({
           >
             <h3 style={{ margin: "0 0 8px" }}>Continuer la manche ?</h3>
             <p style={{ opacity: 0.8, marginTop: 0 }}>
-              Le premier joueur a terminé. Tu peux <b>terminer maintenant</b> (classement figé)
-              ou <b>continuer</b> jusqu’à ce que l’avant-dernier finisse.
+              Le premier joueur a terminé. Tu peux <b>terminer maintenant</b> (classement figé) ou{" "}
+              <b>continuer</b> jusqu’à ce que l’avant-dernier finisse.
             </p>
             <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <button
@@ -1313,7 +1559,7 @@ export default function X01Play({
         onReplay={() => {
           setOverlayOpen(false);
         }}
-        onSave={handleSaveLeg} // ⬅️ NEW: pour sauver la manche depuis l’overlay (autonome)
+        onSave={handleSaveLeg}
       />
 
       {/* Bandeau fin de partie (match terminé) */}

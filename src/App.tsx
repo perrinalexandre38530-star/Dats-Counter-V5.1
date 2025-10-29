@@ -23,6 +23,7 @@ import KillerPlay from "./pages/KillerPlay";
 import ShanghaiPlay from "./pages/ShanghaiPlay";
 import LobbyPick from "./pages/LobbyPick";
 import StatsHub from "./pages/StatsHub";
+import X01End from "./pages/X01End";
 
 // Historique (pour StatsDetail minimal)
 import { History } from "./lib/history";
@@ -38,6 +39,7 @@ type Tab =
   | "settings"
   | "x01setup"
   | "x01"
+  | "x01_end"   // 👈 ajouté
   | "cricket"
   | "killer"
   | "shanghai";
@@ -221,10 +223,10 @@ export default function App() {
     update((s) => ({ ...s, profiles: fn(s.profiles ?? []) }));
   }
 
-  // Fin de partie → ajoute à l’historique + va sur Stats
+  // Fin de partie → ajoute à l’historique + va sur Stats (onglet Historique)
   function pushHistory(m: MatchRecord) {
     update((s) => ({ ...s, history: [...(s.history ?? []), m] }));
-    go("stats");
+    go("stats", { tab: "history" }); // 👈 ouvre direct l’historique
   }
 
   // --------------------------------------------
@@ -283,7 +285,8 @@ export default function App() {
       case "stats":
         page = (
           <StatsHub
-            go={go} // ← pour permettre Reprendre & Voir stats (transmet { resumeId } à X01)
+            go={go}                       // reprise & “voir stats”
+            {...(routeParams ?? {})}      // ex: { tab: "history" }
           />
         );
         break;
@@ -292,7 +295,7 @@ export default function App() {
         const rec = History.get(routeParams?.matchId);
         page = rec ? (
           <div style={{ padding: 16 }}>
-            <button onClick={() => go("stats")} style={{ marginBottom: 12 }}>
+            <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
               ← Retour
             </button>
             <h2 style={{ margin: 0 }}>
@@ -308,11 +311,10 @@ export default function App() {
                 {(rec.players || []).find((p: any) => p.id === rec.winnerId)?.name ?? "—"}
               </div>
             )}
-            {/* Tu enrichiras ici avec les stats détaillées */}
           </div>
         ) : (
           <div style={{ padding: 16 }}>
-            <button onClick={() => go("stats")} style={{ marginBottom: 12 }}>
+            <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
               ← Retour
             </button>
             Aucune donnée
@@ -363,6 +365,10 @@ export default function App() {
             />
           );
         }
+        break;
+
+      case "x01_end": // 👈 nouvelle route : tableau de fin de partie (lecture seule)
+        page = <X01End go={go} params={routeParams} />;
         break;
 
       // ---------- Autres jeux ----------

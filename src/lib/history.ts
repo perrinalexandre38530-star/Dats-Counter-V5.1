@@ -1,157 +1,174 @@
 // ============================================
-// src/lib/history.ts (fix sans dépendance "uuid")
+// src/lib/history.ts
+// Historique léger + fabrique d'enregistrements X01
+// - Stockage localStorage (clé "darts.history.v1")
+// - API: History.list/get/getX01/upsert/remove/clear
+// - makeX01RecordFromEngine(engine, existingId?)
 // ============================================
 
-// --- ID sans package ---
-const genId = (): string => {
-  // navigateur moderne
-  if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
-    return (crypto as any).randomUUID();
-  }
-  // fallback
-  const s = () => Math.random().toString(36).slice(2, 10);
-  return `${Date.now().toString(36)}-${s()}-${s()}`;
+/* --- Types souples (évite la casse pendant l'intégration) --- */
+export type PlayerLite = { id: string; name: string; avatarDataUrl?: string | null };
+export type X01Snapshot = {
+  rules: { start: number; doubleOut: boolean };
+  players: PlayerLite[];
+  scores: number[];
+  currentIndex: number;
+  dartsThisTurn: { v: number; mult: 1 | 2 | 3 }[];
+  winnerId?: string | null;
 };
 
-import type { SavedMatch, SavedPlayer, X01Snapshot } from "./types";
+export type SavedMatch = {
+  id: string;
+  kind: "x01" | "leg" | string;
+  status: "in_progress" | "finished";
+  players?: PlayerLite[];
+  winnerId?: string | null;
+  updatedAt: number;
+  createdAt?: number;
+  // pour X01: { state: X01Snapshot }
+  // pour LEG: payload = LegResult
+  payload?: any;
+  // résumé optionnel ultra-léger pour l’historique
+  summary?: {
+    title?: string;
+    subtitle?: string;
+  };
+};
 
 const KEY = "darts.history.v1";
 
-/* ---------- Lecture / Écriture locale ---------- */
-function readAll(): SavedMatch[] {
+/* ---------- Helpers stockage ---------- */
+function safeRead(): SavedMatch[] {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as SavedMatch[]) : [];
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
   }
 }
 
-function writeAll(list: SavedMatch[]) {
-  localStorage.setItem(KEY, JSON.stringify(list));
+function safeWrite(items: SavedMatch[]) {
+  try {
+    // Compression minime : tri + toJSON
+    const ordered = [...items].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    localStorage.setItem(KEY, JSON.stringify(ordered));
+  } catch (e) {
+    // En cas de quota, on supprime les entrées les plus anciennes et on retente
+    try {
+      let arr = [...items].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      while (arr.length > 0) {
+        arr = arr.slice(0, -1);
+        localStorage.setItem(KEY, JSON.stringify(arr));
+        break;
+      }
+    } catch {
+      // on abandonne silencieusement
+    }
+  }
 }
 
-function now() {
-  return Date.now();
-}
-
-/* ---------- API publique ---------- */
+/* ---------- API ---------- */
 export const History = {
-  /** Liste triée, la plus récente en premier */
   list(): SavedMatch[] {
-    return readAll().sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    return safeRead();
   },
 
-  /** Récupère un match par id. Ne renvoie **jamais** undefined. */
   get(id: string): SavedMatch | null {
-    const rec = readAll().find((r) => r.id === id);
-    return rec ?? null;
+    return safeRead().find((r) => r.id === id) ?? null;
   },
 
-  /** Récupère un match X01 (ou null si absent / mauvais type). */
+  // alias pour compat X01 (même chose que get)
   getX01(id: string): SavedMatch | null {
-    const rec = this.get(id);
-    if (!rec || rec.kind !== "x01") return null;
-    return rec;
+    return History.get(id);
   },
 
-  /** Crée ou met à jour un match. Renvoie la version effectivement stockée. */
   upsert(rec: SavedMatch): SavedMatch {
-    const all = readAll();
-
-    // garde-fou timestamps + id
-    const stored: SavedMatch = {
+    const arr = safeRead();
+    const i = arr.findIndex((r) => r.id === rec.id);
+    const merged: SavedMatch = {
+      ...(i >= 0 ? arr[i] : {}),
       ...rec,
-      id: rec.id || genId(),
-      createdAt: rec.createdAt ?? now(),
-      updatedAt: now(),
+      updatedAt: rec.updatedAt ?? Date.now(),
     };
-
-    const i = all.findIndex((r) => r.id === stored.id);
-    if (i >= 0) all[i] = stored;
-    else all.unshift(stored);
-
-    writeAll(all);
-    return stored;
-  },
-
-  /** Modifie un match par mutation. Renvoie la version enregistrée ou null. */
-  update(id: string, mut: (r: SavedMatch) => SavedMatch): SavedMatch | null {
-    const all = readAll();
-    const i = all.findIndex((r) => r.id === id);
-    if (i < 0) return null;
-
-    const next = mut({ ...all[i] });
-    const stored: SavedMatch = {
-      ...next,
-      id,
-      createdAt: next.createdAt ?? all[i].createdAt ?? now(),
-      updatedAt: now(),
-    };
-
-    all[i] = stored;
-    writeAll(all);
-    return stored;
+    if (i >= 0) arr[i] = merged;
+    else arr.unshift(merged);
+    safeWrite(arr);
+    return merged;
   },
 
   remove(id: string) {
-    writeAll(readAll().filter((r) => r.id !== id));
+    const arr = safeRead().filter((r) => r.id !== id);
+    safeWrite(arr);
   },
 
   clear() {
-    writeAll([]);
+    try {
+      localStorage.removeItem(KEY);
+    } catch {}
   },
 };
 
-/* =========================================================
-   Création / mise à jour depuis le moteur X01
-   ========================================================= */
-export function makeX01RecordFromEngine(params: {
+/* ---------- Fabrique: X01 -> SavedMatch ---------- */
+/**
+ * Construit un enregistrement X01 à partir d'un "engine-like"
+ * attendu par X01Play (buildEngineLike).
+ *
+ * engine: {
+ *   rules: { start, doubleOut },
+ *   players: [{id,name}...],
+ *   scores: number[],
+ *   currentIndex: number,
+ *   dartsThisTurn: Dart[],
+ *   winnerId?: string|null
+ * }
+ */
+export function makeX01RecordFromEngine(
   engine: {
-    rules: { start: number; doubleOut: boolean; sets?: number; legs?: number };
-    players: Array<{ id?: string; name: string }>;
+    rules: { start: number; doubleOut: boolean };
+    players: PlayerLite[];
     scores: number[];
     currentIndex: number;
-    dartsThisTurn: Array<{ v: number; mult: 1 | 2 | 3 } | null>;
-    sets?: number[];
-    legs?: number[];
+    dartsThisTurn: { v: number; mult: 1 | 2 | 3 }[];
     winnerId?: string | null;
-  };
-  existingId?: string;
-}): SavedMatch {
-  const { engine, existingId } = params;
-
-  const players: SavedPlayer[] = engine.players.map((p) => ({
-    id: p.id ?? `local:${p.name}`,
-    name: p.name,
-  }));
+  },
+  existingId?: string
+): SavedMatch {
+  const players = (engine.players || []).map((p) => ({ id: p.id, name: p.name }));
+  const winnerId = engine.winnerId ?? null;
+  const status: SavedMatch["status"] = winnerId ? "finished" : "in_progress";
 
   const snapshot: X01Snapshot = {
-    rules: {
-      startScore: engine.rules.start,
-      doubleOut: engine.rules.doubleOut,
-      sets: engine.rules.sets,
-      legs: engine.rules.legs,
-    },
+    rules: { start: Number(engine.rules?.start ?? 501), doubleOut: !!engine.rules?.doubleOut },
     players,
-    scores: [...engine.scores],
-    currentIndex: engine.currentIndex,
-    dartsThisTurn: engine.dartsThisTurn,
-    legs: engine.legs,
-    sets: engine.sets,
+    scores: engine.scores ?? [],
+    currentIndex: Number(engine.currentIndex ?? 0),
+    dartsThisTurn: engine.dartsThisTurn ?? [],
+    winnerId,
   };
 
-  const when = now();
+  const id =
+    existingId ??
+    (typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : String(Date.now()));
+
+  const subtitle = players.map((p) => p.name).join(" · ");
 
   const rec: SavedMatch = {
-    id: existingId ?? genId(),
+    id,
     kind: "x01",
-    status: engine.winnerId ? "finished" : "in_progress",
-    createdAt: when,
-    updatedAt: when,
+    status,
     players,
-    winnerId: engine.winnerId ?? undefined,
-    payload: { kind: "x01", state: snapshot },
+    winnerId,
+    updatedAt: Date.now(),
+    createdAt: Date.now(),
+    payload: { state: snapshot },
+    summary: {
+      title: `X01 ${new Date().toLocaleString()}`,
+      subtitle,
+    },
   };
 
   return rec;

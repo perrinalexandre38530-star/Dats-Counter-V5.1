@@ -7,6 +7,8 @@
 // - Colonnes: DB/TP/Bull/DBull + % dans "Stats globales"
 // - Résumé: vainqueur, Min Darts, Best Moy./3D, Best Volée, Best %DB, Best %TP, Best BULL
 // - Guards Recharts (montage seulement si conteneur >= 220×240)
+// - Respecte result.order sinon fallback (remaining ASC, avg3 DESC)
+// - Aucune TTS ici (silence depuis Historique/Stats)
 // ============================================
 
 import React from "react";
@@ -29,21 +31,21 @@ type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };
 export type LegResult = {
   legNo: number;
   winnerId: string;
-  order: string[];
+  order?: string[];
   finishedAt: number;
   remaining: Record<string, number>;
   darts: Record<string, number>;
   visits: Record<string, number>;
   avg3: Record<string, number>;
-  bestVisit: Record<string, number>;
-  bestCheckout: Record<string, number | null>;
-  x180: Record<string, number>;
-  doubles: Record<string, number>;
-  triples: Record<string, number>;
-  bulls: Record<string, number>;
+  bestVisit?: Record<string, number>;
+  bestCheckout?: Record<string, number | null>;
+  x180?: Record<string, number>;
+  doubles?: Record<string, number>;
+  triples?: Record<string, number>;
+  bulls?: Record<string, number>;
   visitSumsByPlayer?: Record<string, number[]>;
   checkoutDartsByPlayer?: Record<string, number[]>;
-  hitsBySector?: Record<string, Record<string, number>>; // pour OB/IB
+  hitsBySector?: Record<string, Record<string, number>>; // inclut "OB" et "IB"
   h60?: Record<string, number>;
   h100?: Record<string, number>;
   h140?: Record<string, number>;
@@ -101,8 +103,9 @@ function OverlayInner({
     [playersById]
   );
 
-  const order = result?.order ?? [];
-  const num = (n?: number | null) => (typeof n === "number" && isFinite(n) ? n : 0);
+  // ---- helpers numériques & % ----
+  const num = (n?: number | null) =>
+    typeof n === "number" && isFinite(n) ? n : 0;
   const pct = (a: number, b: number) =>
     b > 0 ? ((a / b) * 100).toFixed(1) + "%" : "0.0%";
   const fmt2 = (n?: number | null) =>
@@ -110,12 +113,34 @@ function OverlayInner({
   const avg = (arr?: number[]) =>
     arr && arr.length ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100 : 0;
 
-  // rows + dérivés (OB/IB & %)
+  // ---- ordre fiable: use result.order si dispo, sinon tri fallback
+  const allIds = React.useMemo(
+    () => Object.keys(result?.remaining || {}),
+    [result?.remaining]
+  );
+  const safeOrder: string[] = React.useMemo(() => {
+    if (Array.isArray(result.order) && result.order.length) return result.order.slice();
+    // fallback: remaining ASC, tie-break avg3 DESC
+    return allIds
+      .slice()
+      .sort((a, b) => {
+        const ra = result.remaining?.[a] ?? Number.POSITIVE_INFINITY;
+        const rb = result.remaining?.[b] ?? Number.POSITIVE_INFINITY;
+        if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
+        if (ra !== rb) return ra - rb;
+        const aa = result.avg3?.[a] ?? 0;
+        const ab = result.avg3?.[b] ?? 0;
+        return ab - aa;
+      });
+  }, [result.order, result.remaining, result.avg3, allIds]);
+
+  // ---- rows + dérivés (OB/IB & %) ----
   const rows = React.useMemo(() => {
-    return order.map((pid, i) => {
+    return safeOrder.map((pid, i) => {
       const darts = num(result?.darts?.[pid]);
       const doubles = num(result?.doubles?.[pid]);
       const triples = num(result?.triples?.[pid]);
+
       const hits = result?.hitsBySector?.[pid] || {};
       const ob = num(hits["OB"]);
       const ib = num(hits["IB"]);
@@ -133,7 +158,7 @@ function OverlayInner({
         x180: num(result?.x180?.[pid]),
         doubles,
         triples,
-        bulls, // total OB+IB
+        bulls,
         ob,
         ib,
         h60: num(result?.h60?.[pid]),
@@ -149,12 +174,12 @@ function OverlayInner({
         pDBull: pct(ib, darts),
       };
     });
-  }, [order, result, nameOf]);
+  }, [safeOrder, result, nameOf]);
 
-  // Best-of pour Résumé
-  const winnerId = result?.winnerId ?? order[0] ?? null;
+  // ---- Best-of pour Résumé
+  const winnerId = result?.winnerId ?? safeOrder[0] ?? null;
 
-  const minDarts = Math.min(...rows.map((r) => r.darts || Infinity));
+  const minDarts = Math.min(...rows.map((r) => (r.darts > 0 ? r.darts : Infinity)));
   const minDartsRow = rows.find((r) => r.darts === minDarts);
 
   const bestAvg = Math.max(...rows.map((r) => r.avg3 || 0));
@@ -164,33 +189,32 @@ function OverlayInner({
   const bestVolRow = rows.find((r) => r.best === bestVol);
 
   const bestPDB = Math.max(...rows.map((r) => parseFloat(r.pDB) || 0));
-  const bestPDBRow =
-    rows.find((r) => parseFloat(r.pDB) === bestPDB) ?? null;
+  const bestPDBRow = rows.find((r) => parseFloat(r.pDB) === bestPDB) ?? null;
 
   const bestPTP = Math.max(...rows.map((r) => parseFloat(r.pTP) || 0));
-  const bestPTPRow =
-    rows.find((r) => parseFloat(r.pTP) === bestPTP) ?? null;
+  const bestPTPRow = rows.find((r) => parseFloat(r.pTP) === bestPTP) ?? null;
 
   const bestBullTotal = Math.max(...rows.map((r) => r.bulls || 0));
   const bestBullRow = rows.find((r) => r.bulls === bestBullTotal);
 
-  // Graph data
+  // ---- Graph data (guards)
   const barData = React.useMemo(
     () => rows.map((r) => ({ name: r.name, avg3: Number(fmt2(r.avg3)) })),
     [rows]
   );
   const radarKeys = React.useMemo(() => {
     const m = result?.hitsBySector || {};
-    const first = order[0];
+    const first = safeOrder[0];
     if (!first || !m[first]) return null;
     const entries = Object.entries(m[first])
-      .sort((a, b) => b[1] - a[1])
+      .filter(([k]) => k !== "MISS") // utile
+      .sort((a, b) => (b[1] as number) - (a[1] as number))
       .slice(0, 12)
       .map(([k]) => k);
     return entries.length ? entries : null;
-  }, [result, order]);
+  }, [result, safeOrder]);
 
-  // UI
+  // ---- UI
   return (
     <div
       style={{
@@ -206,6 +230,7 @@ function OverlayInner({
       }}
       role="dialog"
       aria-modal="true"
+      onClick={onClose}
     >
       <div
         style={{
@@ -217,8 +242,9 @@ function OverlayInner({
           border: "1px solid rgba(255,255,255,.08)",
           boxShadow: "0 16px 44px rgba(0,0,0,.45)",
           color: "#e7e7e7",
-          fontSize: 12, // 👈 compact
+          fontSize: 12, // compact
         }}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -250,7 +276,7 @@ function OverlayInner({
 
         {/* Corps */}
         <div style={{ padding: 10, paddingTop: 8 }}>
-          {/* Classement */}
+          {/* Classement (liste compacte, pas de <tr> ici) */}
           <div
             style={{
               borderRadius: 10,
@@ -337,13 +363,9 @@ function OverlayInner({
               <KV
                 label="Min Darts"
                 value={
-                  minDartsRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{minDartsRow.name}</b> — {minDartsRow.darts}
-                    </>
-                  ) : (
-                    "—"
-                  )
+                  isFinite(minDarts) && minDartsRow ? (
+                    <span><b style={{ color: "#ffcf57" }}>{minDartsRow.name}</b> — {minDartsRow.darts}</span>
+                  ) : "—"
                 }
                 right
               />
@@ -351,24 +373,16 @@ function OverlayInner({
                 label="Best Moy./3D"
                 value={
                   bestAvgRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{bestAvgRow.name}</b> — {fmt2(bestAvgRow.avg3)}
-                    </>
-                  ) : (
-                    "—"
-                  )
+                    <span><b style={{ color: "#ffcf57" }}>{bestAvgRow.name}</b> — {fmt2(bestAvgRow.avg3)}</span>
+                  ) : "—"
                 }
               />
               <KV
                 label="Best Volée"
                 value={
                   bestVolRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{bestVolRow.name}</b> — {bestVolRow.best}
-                    </>
-                  ) : (
-                    "—"
-                  )
+                    <span><b style={{ color: "#ffcf57" }}>{bestVolRow.name}</b> — {bestVolRow.best}</span>
+                  ) : "—"
                 }
                 right
               />
@@ -376,24 +390,16 @@ function OverlayInner({
                 label="Best %DB"
                 value={
                   bestPDBRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{bestPDBRow.name}</b> — {bestPDBRow.pDB}
-                    </>
-                  ) : (
-                    "—"
-                  )
+                    <span><b style={{ color: "#ffcf57" }}>{bestPDBRow.name}</b> — {bestPDBRow.pDB}</span>
+                  ) : "—"
                 }
               />
               <KV
                 label="Best %TP"
                 value={
                   bestPTPRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{bestPTPRow.name}</b> — {bestPTPRow.pTP}
-                    </>
-                  ) : (
-                    "—"
-                  )
+                    <span><b style={{ color: "#ffcf57" }}>{bestPTPRow.name}</b> — {bestPTPRow.pTP}</span>
+                  ) : "—"
                 }
                 right
               />
@@ -401,15 +407,11 @@ function OverlayInner({
                 label="Best BULL"
                 value={
                   bestBullRow ? (
-                    <>
-                      <b style={{ color: "#ffcf57" }}>{bestBullRow.name}</b> — {bestBullRow.bulls}{" "}
-                      <span style={{ opacity: 0.8 }}>
-                        ({bestBullRow.ob} + {bestBullRow.ib})
-                      </span>
-                    </>
-                  ) : (
-                    "—"
-                  )
+                    <span>
+                      <b style={{ color: "#ffcf57" }}>{bestBullRow.name}</b> — {bestBullRow.bulls}
+                      <span style={{ opacity: 0.8 }}> ({bestBullRow.ob} + {bestBullRow.ib})</span>
+                    </span>
+                  ) : "—"
                 }
               />
             </div>
@@ -419,10 +421,10 @@ function OverlayInner({
             <div style={{ overflowX: "auto" }}>
               <table style={tableBase}>
                 <thead>
-                  <tr style={{ background: "rgba(255,255,255,.05)" }}>
+                  <tr /* no text here */>
                     <TH>Joueur</TH>
                     <TH>Volées</TH>
-                    <TH>Darts</TH> {/* Fléchettes → Darts */}
+                    <TH>Darts</TH>
                     <TH>Moy./3D</TH>
                     <TH>60+</TH>
                     <TH>100+</TH>
@@ -434,7 +436,7 @@ function OverlayInner({
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.pid} style={rowLine}>
+                    <tr key={`fast-${r.pid}`} style={rowLine}>
                       <TDStrong>{r.name}</TDStrong>
                       <TD>{r.visits}</TD>
                       <TD>{r.darts}</TD>
@@ -456,7 +458,7 @@ function OverlayInner({
             <div style={{ overflowX: "auto" }}>
               <table style={tableBase}>
                 <thead>
-                  <tr style={{ background: "rgba(255,255,255,.05)" }}>
+                  <tr>
                     <TH>Joueur</TH>
                     <TH>CO</TH>
                     <TH>Darts CO</TH>
@@ -468,7 +470,7 @@ function OverlayInner({
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.pid} style={rowLine}>
+                    <tr key={`darts-${r.pid}`} style={rowLine}>
                       <TDStrong>{r.name}</TDStrong>
                       <TD>{r.coCount}</TD>
                       <TD>{r.coCount ? fmt2(r.coDartsAvg) : "—"}</TD>
@@ -487,7 +489,7 @@ function OverlayInner({
             <div style={{ overflowX: "auto" }}>
               <table style={{ ...tableBase, minWidth: 620 }}>
                 <thead>
-                  <tr style={{ background: "rgba(255,255,255,.05)" }}>
+                  <tr>
                     <TH>#</TH>
                     <TH>Joueur</TH>
                     <TH>Moy./3D</TH>
@@ -501,7 +503,7 @@ function OverlayInner({
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.pid} style={rowLine}>
+                    <tr key={`global-${r.pid}`} style={rowLine}>
                       <TD>{r.rank}</TD>
                       <TDStrong>{r.name}</TDStrong>
                       <TD>{fmt2(r.avg3)}</TD>
@@ -528,7 +530,7 @@ function OverlayInner({
                         <RadarChart
                           data={radarKeys.map((k) => ({
                             sector: k,
-                            v: result?.hitsBySector?.[order[0]]?.[k] ?? 0,
+                            v: result?.hitsBySector?.[safeOrder[0]]?.[k] ?? 0,
                           }))}
                         >
                           <PolarGrid />
@@ -739,8 +741,9 @@ const tableBase: React.CSSProperties = {
   minWidth: 520,
   fontSize: 12,
 };
-
-const rowLine: React.CSSProperties = { borderBottom: "1px solid rgba(255,255,255,.06)" };
+const rowLine: React.CSSProperties = {
+  borderBottom: "1px solid rgba(255,255,255,.06)",
+};
 
 function TH({ children }: { children: React.ReactNode }) {
   return (

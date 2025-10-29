@@ -1,294 +1,179 @@
 // ============================================
-// src/lib/stats.ts — Minimal Stats Engine (v1)
-// - Per-player aggregates across all finished games
-// - Safe to call at end of each match/leg
-// - LocalStorage-backed (dc5_stats_v1) — easy to swap later
+// src/lib/stats.ts  —  Store de stats globales (défensif)
 // ============================================
 
-export type PlayerLite = { id: string; name: string };
+const LS_KEY = "dc5_stats_v1";
 
-export type PerPlayerInput = {
-  dartsThrown: number;          // total darts thrown in the match
-  pointsScored: number;         // total points scored in the match
-  visits?: number;              // number of 3-dart visits
-  avg3?: number;                // average points per 3 darts (= pointsScored / visits)
-  bestVisit?: number;           // best 3-dart score in the match (e.g., 180, 140)
-  highestCheckout?: number;     // best checkout value achieved in the match
-  tons60?: number;              // count of 60+ visits (60..99)
-  tons100?: number;             // 100..139
-  tons140?: number;             // 140..179
-  ton180?: number;              // 180s
-  checkoutAttempts?: number;    // attempts on a finishing double (or out)
-  checkoutHits?: number;        // successful finishes in the match
-  legsPlayed?: number;          // optional: legs played contributed by this match
-  legsWon?: number;             // optional: legs won in this match
-};
-
-export type MatchStatsInput = {
-  id: string;                   // unique match id (for idempotency if you want later)
-  kind: "x01" | "cricket" | string;
-  finishedAt: number;           // timestamp (ms)
-  players: PlayerLite[];        // roster snapshot
-  winnerId?: string | null;     // winner for the match (if applicable)
-  perPlayer: Record<string, PerPlayerInput>;
-};
-
-export type PlayerStats = {
-  player: PlayerLite;
-
-  // Totals
-  matches: number;
-  wins: number;
-  legsPlayed: number;
-  legsWon: number;
+type PerPlayerAgg = {
   dartsThrown: number;
   pointsScored: number;
   visits: number;
-
-  // Rates / averages (derived on read, but we persist running sums)
-  avgPerDart: number;           // pointsScored / dartsThrown
-  avg3: number;                 // pointsScored / max(1, visits) * 3 normalizer handled
-  checkoutAttempts: number;
-  checkoutHits: number;
-  checkoutPct: number;          // hits/attempts
-
-  // Peaks
-  bestVisit: number;            // best 3-dart score ever
-  highestCheckout: number;      // best checkout ever
-
-  // Buckets
+  avg3: number;            // moyenne par volée (affichée “Moy/3”)
+  bestVisit: number;
+  highestCheckout: number;
   tons60: number;
   tons100: number;
   tons140: number;
   ton180: number;
-
-  // Meta
-  updatedAt: number;
+  checkoutAttempts: number;
+  checkoutHits: number;
+  legsPlayed: number;
+  legsWon: number;
 };
 
-export type StatsStore = {
-  version: 1;
-  players: Record<string, PlayerStats>;
-  lastUpdated: number;
+type StatsStore = {
+  // par joueur
+  perPlayer: Record<string, PerPlayerAgg>;
+  // totaux, si besoin plus tard
+  lastUpdatedAt: number;
 };
 
-const LS_KEY = "dc5_stats_v1";
-
-/* ---------------- Storage ---------------- */
-
-function loadStore(): StatsStore {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return fresh();
-    const parsed = JSON.parse(raw) as StatsStore;
-    if (parsed?.version !== 1) return fresh();
-    return parsed;
-  } catch {
-    return fresh();
-  }
-}
-
-function saveStore(store: StatsStore) {
-  store.lastUpdated = Date.now();
-  localStorage.setItem(LS_KEY, JSON.stringify(store));
-}
-
-function fresh(): StatsStore {
-  return { version: 1, players: {}, lastUpdated: Date.now() };
-}
-
-/* --------------- Helpers ----------------- */
-
-function initPlayerStats(base: PlayerLite): PlayerStats {
+function emptyAgg(): PerPlayerAgg {
   return {
-    player: { ...base },
-
-    matches: 0,
-    wins: 0,
-    legsPlayed: 0,
-    legsWon: 0,
     dartsThrown: 0,
     pointsScored: 0,
     visits: 0,
-
-    avgPerDart: 0,
     avg3: 0,
-    checkoutAttempts: 0,
-    checkoutHits: 0,
-    checkoutPct: 0,
-
     bestVisit: 0,
     highestCheckout: 0,
-
     tons60: 0,
     tons100: 0,
     tons140: 0,
     ton180: 0,
-
-    updatedAt: Date.now(),
+    checkoutAttempts: 0,
+    checkoutHits: 0,
+    legsPlayed: 0,
+    legsWon: 0,
   };
 }
 
-function recalcDerived(p: PlayerStats) {
-  p.avgPerDart = p.dartsThrown > 0 ? p.pointsScored / p.dartsThrown : 0;
-  p.avg3 = p.visits > 0 ? p.pointsScored / p.visits : 0;
-  p.checkoutPct = p.checkoutAttempts > 0 ? p.checkoutHits / p.checkoutAttempts : 0;
-  p.updatedAt = Date.now();
+function emptyStore(): StatsStore {
+  return { perPlayer: {}, lastUpdatedAt: 0 };
 }
 
-/* --------------- Public API -------------- */
-
-/**
- * Save a finished match into global stats.
- * Call this ONCE per finished match (e.g., at end-of-leg or end-of-match overlay guard).
- */
-export function saveMatchStats(input: MatchStatsInput) {
-  const store = loadStore();
-
-  // small safety: ensure roster is known
-  for (const pl of input.players) {
-    if (!store.players[pl.id]) {
-      store.players[pl.id] = initPlayerStats(pl);
-    } else {
-      // keep latest display name
-      store.players[pl.id].player.name = pl.name;
+function safeParse(json: string | null): StatsStore {
+  if (!json) return emptyStore();
+  try {
+    const obj = JSON.parse(json);
+    // garde-fous forts (anti-null/undefined)
+    if (!obj || typeof obj !== "object") return emptyStore();
+    const perPlayer: Record<string, PerPlayerAgg> = {};
+    const src = (obj as any).perPlayer || {};
+    if (src && typeof src === "object") {
+      for (const pid of Object.keys(src)) {
+        const a = src[pid] || {};
+        perPlayer[pid] = {
+          ...emptyAgg(),
+          ...a,
+        };
+      }
     }
-  }
-
-  // merge numbers per player
-  for (const [pid, delta] of Object.entries(input.perPlayer)) {
-    const plLite =
-      input.players.find((p) => p.id === pid) ?? { id: pid, name: "?" };
-    const agg = store.players[pid] ?? initPlayerStats(plLite);
-
-    agg.matches += 1;
-    if (input.winnerId && pid === input.winnerId) agg.wins += 1;
-
-    agg.legsPlayed += delta.legsPlayed ?? 1; // default +1 leg per record if not provided
-    agg.legsWon += delta.legsWon ?? (input.winnerId === pid ? 1 : 0);
-
-    agg.dartsThrown += delta.dartsThrown || 0;
-    agg.pointsScored += delta.pointsScored || 0;
-
-    agg.visits += delta.visits || 0;
-
-    agg.checkoutAttempts += delta.checkoutAttempts || 0;
-    agg.checkoutHits += delta.checkoutHits || 0;
-
-    agg.bestVisit = Math.max(agg.bestVisit, delta.bestVisit || 0);
-    agg.highestCheckout = Math.max(agg.highestCheckout, delta.highestCheckout || 0);
-
-    agg.tons60 += delta.tons60 || 0;
-    agg.tons100 += delta.tons100 || 0;
-    agg.tons140 += delta.tons140 || 0;
-    agg.ton180 += delta.ton180 || 0;
-
-    recalcDerived(agg);
-    store.players[pid] = agg;
-  }
-
-  saveStore(store);
-}
-
-/** Get aggregated stats for one player (null if unknown). */
-export function getPlayerStats(playerId: string): PlayerStats | null {
-  const s = loadStore();
-  const p = s.players[playerId];
-  return p ? { ...p } : null;
-}
-
-/** Convenience for showing on profile medallions. Safe to call often. */
-export function getPlayerMedallionStats(playerId: string) {
-  const p = getPlayerStats(playerId);
-  if (!p) {
     return {
-      matches: 0,
-      wins: 0,
-      winRate: 0,
-      avg3: 0,
-      bestVisit: 0,
-      highestCheckout: 0,
-      ton180: 0,
-      updatedAt: 0,
+      perPlayer,
+      lastUpdatedAt: Number((obj as any).lastUpdatedAt) || 0,
     };
+  } catch {
+    // JSON corrompu
+    return emptyStore();
   }
+}
+
+function load(): StatsStore {
+  try {
+    return safeParse(localStorage.getItem(LS_KEY));
+  } catch {
+    return emptyStore();
+  }
+}
+
+function save(s: StatsStore) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(s));
+  } catch {
+    // quota plein -> on ignore silencieusement
+  }
+}
+
+// ============================================
+// API publique
+// ============================================
+
+/** Merge d’un enregistrement (par joueur) dans le store. */
+export function saveMatchStats(rec: {
+  id: string;                // match id
+  createdAt: number;
+  rules?: any;
+  players: string[];         // ids
+  standing?: any;
+  winnerId?: string | null;
+  sets?: any[];
+  perPlayerHitBuckets?: any; // non utilisé ici mais conservé si besoin
+  // — pour compat (on merge juste perPlayer)
+  perPlayer?: Record<string, Partial<PerPlayerAgg>>;
+}) {
+  const store = load();
+  const src = rec.perPlayer || {};
+  for (const pid of Object.keys(src || {})) {
+    const prev = store.perPlayer[pid] ?? emptyAgg();
+    const add = src[pid] || {};
+    const merged: PerPlayerAgg = { ...prev };
+
+    // cumul additif sur tous les compteurs
+    merged.dartsThrown += Number(add.dartsThrown || 0);
+    merged.pointsScored += Number(add.pointsScored || 0);
+    merged.visits += Number(add.visits || 0);
+    merged.bestVisit = Math.max(prev.bestVisit, Number(add.bestVisit || 0));
+    merged.highestCheckout = Math.max(prev.highestCheckout, Number(add.highestCheckout || 0));
+    merged.tons60 += Number(add.tons60 || 0);
+    merged.tons100 += Number(add.tons100 || 0);
+    merged.tons140 += Number(add.tons140 || 0);
+    merged.ton180 += Number(add.ton180 || 0);
+    merged.checkoutAttempts += Number(add.checkoutAttempts || 0);
+    merged.checkoutHits += Number(add.checkoutHits || 0);
+    merged.legsPlayed += Number(add.legsPlayed || 0);
+    merged.legsWon += Number(add.legsWon || 0);
+
+    // avg3 recalculée à partir des points cumulés / visites cumulées
+    merged.avg3 =
+      merged.visits > 0 ? Math.round((merged.pointsScored / merged.visits) * 100) / 100 : 0;
+
+    store.perPlayer[pid] = merged;
+  }
+  store.lastUpdatedAt = Date.now();
+  save(store);
+}
+
+/** Résumé “médaillon” ultraléger pour un joueur. */
+export function getPlayerMedallionStats(playerId: string) {
+  const s = load();
+  const a = s.perPlayer[playerId] ?? emptyAgg();
+
+  const winRate =
+    a.legsPlayed > 0 ? Math.max(0, Math.min(1, a.legsWon / a.legsPlayed)) : 0;
+
   return {
-    matches: p.matches,
-    wins: p.wins,
-    winRate: p.matches > 0 ? p.wins / p.matches : 0,
-    avg3: p.avg3,
-    bestVisit: p.bestVisit,
-    highestCheckout: p.highestCheckout,
-    ton180: p.ton180,
-    updatedAt: p.updatedAt,
+    winRate,
+    avg3: a.avg3 || 0,
+    bestVisit: a.bestVisit || 0,
+    highestCheckout: a.highestCheckout || 0,
+    ton180: a.ton180 || 0,
   };
 }
 
-/** Simple leaderboard helper (e.g., top averages, most 180s) */
-export function getLeaderboard(
-  key: keyof PlayerStats,
-  limit = 10
-): PlayerStats[] {
-  const s = loadStore();
-  return Object.values(s.players)
-    .sort((a, b) => (b[key] as number) - (a[key] as number))
-    .slice(0, limit)
-    .map((x) => ({ ...x }));
+/** Classement simple par Avg3 (ou autre critère si besoin). */
+export function getLeaderboard(by: "avg3" | "bestVisit" = "avg3") {
+  const s = load();
+  const rows = Object.keys(s.perPlayer).map((pid) => ({
+    playerId: pid,
+    ...s.perPlayer[pid],
+  }));
+  rows.sort((a, b) => (b[by] || 0) - (a[by] || 0));
+  return rows;
 }
 
-/** Nuke (for debugging / settings) */
-export function resetAllStats() {
-  saveStore(fresh());
+/** Hard reset des stats (utile en debug). */
+export function clearAllStats() {
+  try {
+    localStorage.removeItem(LS_KEY);
+  } catch {}
 }
-
-/* ============ HOW TO INTEGRATE (quick) ============
-
-1) At end of a leg/match (where you already build your overlay result),
-   call saveMatchStats() with per-player numbers.
-
-   Example from X01 end-of-leg:
-
-   import { saveMatchStats } from "../lib/stats";
-
-   // suppose you have these from your engine:
-   // - players: { id, name }[]
-   // - winnerId: string
-   // - per-player metrics like dartsThrown, pointsScored, visits, avg3,
-   //   bestVisit, highestCheckout, 60+/100+/140+/180, checkoutAttempts/Hits
-
-   saveMatchStats({
-     id: result.matchId ?? crypto.randomUUID(),
-     kind: "x01",
-     finishedAt: Date.now(),
-     players,
-     winnerId,
-     perPlayer: {
-       [p1.id]: {
-         dartsThrown: engine.stats[p1.id].darts,
-         pointsScored: engine.stats[p1.id].scored,
-         visits: engine.stats[p1.id].visits,
-         avg3: engine.stats[p1.id].avg3,
-         bestVisit: engine.stats[p1.id].bestVisit,
-         highestCheckout: engine.stats[p1.id].highestCO,
-         tons60: engine.stats[p1.id].bins60,
-         tons100: engine.stats[p1.id].bins100,
-         tons140: engine.stats[p1.id].bins140,
-         ton180: engine.stats[p1.id].bins180,
-         checkoutAttempts: engine.stats[p1.id].coAttempts,
-         checkoutHits: engine.stats[p1.id].coHits,
-         legsPlayed: 1,
-         legsWon: winnerId === p1.id ? 1 : 0,
-       },
-       [p2.id]: { ...same shape... },
-     },
-   });
-
-2) On a Profile card (médaillon), display:
-   const m = getPlayerMedallionStats(profile.id);
-   // show m.winRate, m.avg3, m.bestVisit, m.highestCheckout, m.ton180, etc.
-
-3) In your Stats page, you can quickly list top 10:
-   const topAvg = getLeaderboard("avg3", 10);
-   const top180 = getLeaderboard("ton180", 10);
-
-==================================================== */
