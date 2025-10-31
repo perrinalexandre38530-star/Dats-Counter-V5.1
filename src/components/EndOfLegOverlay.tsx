@@ -118,8 +118,8 @@ function legToRowsViaNewStats(leg: LegStats, nameOf: (id: string) => string) {
       ob: s?.rates?.bullHits ?? 0, // Outer Bull (25)
       ib: s?.rates?.dbullHits ?? 0, // Inner Bull (50)
       bulls: (s?.rates?.bullHits ?? 0) + (s?.rates?.dbullHits ?? 0),
-      doubles: s?.rates?.dblHits ?? 0, // compte hits (pas tentatives)
-      triples: s?.rates?.triHits ?? 0,
+      doubles: s?.rates?.dblHits ?? 0, // hits
+      triples: s?.rates?.triHits ?? 0, // hits
       h60: s?.bins?.["60+"] ?? 0,
       h100: s?.bins?.["100+"] ?? 0,
       h140: s?.bins?.["140+"] ?? 0,
@@ -134,6 +134,12 @@ function legToRowsViaNewStats(leg: LegStats, nameOf: (id: string) => string) {
       pDBull: `${row.pctDBull}%`,
     };
   });
+}
+
+function avgArray(arr?: number[]) {
+  return arr && arr.length
+    ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100
+    : 0;
 }
 
 function legToRowsViaLegacy(res: LegacyLegResult, nameOf: (id: string) => string) {
@@ -175,7 +181,7 @@ function legToRowsViaLegacy(res: LegacyLegResult, nameOf: (id: string) => string
       h140: res.h140?.[pid] ?? 0,
       h180: res.h180?.[pid] ?? 0,
       coCount: res.checkoutDartsByPlayer?.[pid]?.length ?? 0,
-      coDartsAvg: avg(res.checkoutDartsByPlayer?.[pid]),
+      coDartsAvg: avgArray(res.checkoutDartsByPlayer?.[pid]),
       highestCO: res.bestCheckout?.[pid] ?? 0,
       pDB: pct(res.doubles?.[pid] ?? 0, darts),
       pTP: pct(res.triples?.[pid] ?? 0, darts),
