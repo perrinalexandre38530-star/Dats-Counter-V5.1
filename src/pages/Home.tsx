@@ -2,6 +2,9 @@ import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile } from "../lib/types";
 
+// ★ NEW: stats basiques unifiées (Historique → agrégées)
+import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
+
 /* ---------- Tabs ---------- */
 type Tab =
   | "home" | "games" | "profiles" | "friends" | "all" | "stats" | "settings"
@@ -11,6 +14,7 @@ type Tab =
    Home
    - Tolérant au chargement async (profiles peut être undefined)
    - Boutons rapides
+   - ★ Alimente la carte profil avec les stats unifiées
    ========================================= */
 export default function Home({
   store,
@@ -27,6 +31,9 @@ export default function Home({
   const profiles = store?.profiles ?? [];
   const activeProfileId = store?.activeProfileId ?? null;
   const active = profiles.find((p) => p.id === activeProfileId) ?? null;
+
+  // ★ NEW: charge les stats basiques du profil actif (lazy + cache local)
+  const basicStats = useBasicStats(active?.id || null);
 
   return (
     <div
@@ -92,6 +99,8 @@ export default function Home({
             profile={active}
             status={(store?.selfStatus as any) ?? "online"}
             onNameClick={() => go("stats")}
+            // ★ injecte les stats unifiées (fallback automatique à l’interne)
+            basicStats={basicStats}
           />
         ) : null}
       </div>
@@ -134,23 +143,54 @@ export default function Home({
   );
 }
 
+/* ---------- Hook: charge les stats basiques pour un profil ---------- */
+function useBasicStats(pid: string | null) {
+  const [cache, setCache] = React.useState<Record<string, BasicProfileStats | undefined>>({});
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!pid) return;
+      if (cache[pid]) return; // déjà en cache
+      try {
+        const s = await getBasicProfileStats(pid);
+        if (!cancelled) setCache((m) => ({ ...m, [pid]: s }));
+      } catch {
+        /* no-op */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid]);
+  return pid ? cache[pid] : undefined;
+}
+
 /* ---------- Carte dorée du profil connecté ---------- */
 function ActiveProfileCard({
   profile,
   status,
   onNameClick,
+  basicStats,
 }: {
   profile: Profile;
   status: "online" | "away" | "offline";
   onNameClick: () => void;
+  // ★ NEW
+  basicStats?: BasicProfileStats;
 }) {
-  const s = (profile as any).stats || {};
-  const avg3 = isNum(s.avg3) ? (Math.round(s.avg3 * 10) / 10).toFixed(1) : "—";
-  const best = isNum(s.bestVisit) ? String(s.bestVisit) : "—";
-  const co = isNum(s.bestCheckout) ? String(s.bestCheckout) : "—";
-  const w = isNum(s.wins) ? s.wins : 0;
-  const l = isNum(s.losses) ? s.losses : 0;
-  const wr = w + l > 0 ? Math.round((w / (w + l)) * 100) : null;
+  // Fallback: si pas encore chargées, on garde d’anciens champs éventuels
+  const legacy = (profile as any).stats || {};
+  const s = {
+    avg3: isNum(basicStats?.avg3) ? basicStats!.avg3 : (isNum(legacy.avg3) ? legacy.avg3 : 0),
+    bestVisit: isNum(basicStats?.bestVisit) ? basicStats!.bestVisit : (isNum(legacy.bestVisit) ? legacy.bestVisit : 0),
+    highestCheckout: isNum(basicStats?.highestCheckout) ? basicStats!.highestCheckout : (isNum(legacy.bestCheckout) ? legacy.bestCheckout : 0),
+    legsPlayed: isNum(basicStats?.legsPlayed) ? basicStats!.legsPlayed : (isNum(legacy.legsPlayed) ? legacy.legsPlayed : 0),
+    legsWon: isNum(basicStats?.legsWon) ? basicStats!.legsWon : (isNum(legacy.legsWon) ? legacy.legsWon : 0),
+  };
+
+  const avg3 = (Math.round((s.avg3 || 0) * 10) / 10).toFixed(1);
+  const best = String(s.bestVisit || 0);
+  const co = String(s.highestCheckout || 0);
+  const wr = s.legsPlayed > 0 ? Math.round((s.legsWon / s.legsPlayed) * 100) : null;
 
   const statusLabel =
     status === "away" ? "Absent" : status === "offline" ? "Hors ligne" : "En ligne";

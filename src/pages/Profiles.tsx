@@ -2,6 +2,9 @@ import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile, Friend } from "../lib/types";
 
+// ★ NEW: stats basiques unifiées (History ⇄ Stats)
+import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
+
 /* ================================
    Page — Profils
 ================================ */
@@ -23,6 +26,8 @@ export default function Profiles({
     selfStatus = "online",
   } = store;
 
+  const [statsMap, setStatsMap] = React.useState<Record<string, BasicProfileStats | undefined>>({});
+
   function setActiveProfile(id: string | null) {
     update((s) => ({ ...s, activeProfileId: id }));
   }
@@ -39,6 +44,11 @@ export default function Profiles({
   function delProfile(id: string) {
     setProfiles((arr) => arr.filter((p) => p.id !== id));
     if (store.activeProfileId === id) setActiveProfile(null);
+    setStatsMap((m) => {
+      const c = { ...m };
+      delete c[id];
+      return c;
+    });
   }
 
   async function addProfile(name: string, file?: File | null) {
@@ -52,6 +62,31 @@ export default function Profiles({
   }
 
   const active = profiles.find((p) => p.id === activeProfileId) || null;
+
+  // ★ NEW: charger/mettre en cache les stats basiques du profil actif
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const pid = active?.id;
+      if (!pid) return;
+      // si déjà en cache, on ne relance pas
+      if (statsMap[pid]) return;
+      try {
+        const s = await getBasicProfileStats(pid);
+        if (!cancelled) {
+          setStatsMap((m) => ({ ...m, [pid]: s }));
+        }
+      } catch {
+        /* no-op: on garde l’UI */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id]);
+
+  const activeStats = active?.id ? statsMap[active.id] : undefined;
 
   return (
     <div className="container" style={{ maxWidth: 760 }}>
@@ -111,9 +146,10 @@ export default function Profiles({
                 </span>
               </div>
 
-              {/* Stats principales */}
+              {/* Stats principales (★ reliées aux stats unifiées) */}
               <div className="subtitle" style={{ marginTop: 6, whiteSpace: "nowrap" }}>
-                Moy/3: {fmt(active?.stats?.avg3 ?? 0)} · Best: {active?.stats?.bestVisit ?? 0} · Win: {Math.round((active?.stats?.winrate ?? 0) * 100)}%
+                {/* fallback propre si pas encore calculé */}
+                Moy/3: {fmt(activeStats?.avg3 ?? 0)} · Best: {activeStats?.bestVisit ?? 0} · Win: {winPctFromBasics(activeStats)}
               </div>
 
               {/* Actions compactes sous les stats (une ligne, centrée) */}
@@ -204,32 +240,34 @@ export default function Profiles({
 
       {/* ===== Profils locaux ===== */}
       <Card title="Profils locaux">
-      {/* Formulaire d’ajout rapide (ne défile pas) */}
-      <AddLocalProfile onCreate={addProfile} />
+        {/* Formulaire d’ajout rapide (ne défile pas) */}
+        <AddLocalProfile onCreate={addProfile} />
 
-      {/* Liste scrollable (seulement ce bloc défile) */}
-    <div
-    style={{
-      // hauteur max responsive : prend au plus 44% de la hauteur écran,
-      // mais ne dépasse pas 420px, ni moins de 260px
-      maxHeight: "min(44vh, 420px)",
-      minHeight: 260,
-      overflowY: "auto",
-      paddingRight: 6,            // petit espace pour ne pas coller la scrollbar
-      marginTop: 6,
-      borderRadius: 12,
-      border: "1px solid rgba(255,255,255,.06)",
-      background: "linear-gradient(180deg, rgba(15,15,20,.55), rgba(12,12,16,.55))",
-    }}
-  >
-    <LocalProfiles
-      profiles={profiles}
-      onRename={renameProfile}
-      onAvatar={changeAvatar}
-      onDelete={delProfile}
-    />
-  </div>
-</Card>
+        {/* Liste scrollable (seulement ce bloc défile) */}
+        <div
+          style={{
+            maxHeight: "min(44vh, 420px)",
+            minHeight: 260,
+            overflowY: "auto",
+            paddingRight: 6,
+            marginTop: 6,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,.06)",
+            background: "linear-gradient(180deg, rgba(15,15,20,.55), rgba(12,12,16,.55))",
+          }}
+        >
+          <LocalProfiles
+            profiles={profiles}
+            onRename={renameProfile}
+            onAvatar={changeAvatar}
+            onDelete={delProfile}
+            // ★ passer le cache de stats pour afficher les valeurs si disponibles
+            statsMap={statsMap}
+            // ★ demander (au survol/clic) de “réchauffer” une fiche
+            warmup={(id) => warmProfileStats(id, setStatsMap)}
+          />
+        </div>
+      </Card>
     </div>
   );
 }
@@ -344,6 +382,7 @@ function FriendsBlock({ friends }: { friends?: Friend[] }) {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
                       <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
+                        {/* Friends restent comme avant si tu stockes déjà des stats côté Friend */}
                         Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win: {Math.round((f.stats?.winrate ?? 0) * 100)}%
                       </div>
                     </div>
@@ -427,11 +466,16 @@ function LocalProfiles({
   onRename,
   onAvatar,
   onDelete,
+  statsMap,
+  warmup,
 }: {
   profiles: Profile[];
   onRename: (id: string, name: string) => void;
   onAvatar: (id: string, file: File) => void;
   onDelete: (id: string) => void;
+  // ★ NEW
+  statsMap: Record<string, BasicProfileStats | undefined>;
+  warmup: (id: string) => void;
 }) {
   const [editing, setEditing] = React.useState<string | null>(null);
   const [tmpName, setTmpName] = React.useState<string>("");
@@ -454,6 +498,7 @@ function LocalProfiles({
     <div className="list">
       {profiles.map((p) => {
         const isEdit = editing === p.id;
+        const s = statsMap[p.id]; // ★ stats unifiées si déjà chargées
         return (
           <div className="item" key={p.id} style={{ gap: 10, alignItems: "center" }}>
             <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
@@ -476,6 +521,7 @@ function LocalProfiles({
                       <a
                         href={`#/stats?pid=${p.id}`}
                         onClick={(e) => { e.preventDefault(); location.hash = `#/stats?pid=${p.id}`; }}
+                        onMouseEnter={() => warmup(p.id)} // ★ pré-charge au survol
                         style={{ color: "#f0b12a", textDecoration: "none" }}
                         title="Voir les statistiques"
                       >
@@ -483,7 +529,8 @@ function LocalProfiles({
                       </a>
                     </div>
                     <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                      Moy/3: {fmt(p?.stats?.avg3 ?? 0)} · Best: {p?.stats?.bestVisit ?? 0} · Win: {Math.round((p?.stats?.winrate ?? 0) * 100)}%
+                      {/* ★ affiche les stats unifiées si présentes, sinon fallback éventuel */}
+                      Moy/3: {fmt(s?.avg3 ?? 0)} · Best: {s?.bestVisit ?? 0} · Win: {winPctFromBasics(s)}
                     </div>
                   </>
                 )}
@@ -653,4 +700,25 @@ function read(f: File) {
     r.onload = () => res(String(r.result));
     r.readAsDataURL(f);
   });
+}
+
+// ★ Calcule un “Win %” basique à partir des stats unifiées
+function winPctFromBasics(s?: BasicProfileStats) {
+  if (!s) return "0%";
+  const pct = s.legsPlayed > 0 ? Math.round((s.legsWon / s.legsPlayed) * 100) : 0;
+  return `${pct}%`;
+}
+
+// ★ Chauffe (lazy) les stats d’un profil et les met en cache
+async function warmProfileStats(
+  id: string,
+  setStatsMap: React.Dispatch<React.SetStateAction<Record<string, BasicProfileStats | undefined>>>
+) {
+  if (!id) return;
+  try {
+    const s = await getBasicProfileStats(id);
+    setStatsMap((m) => (m[id] ? m : { ...m, [id]: s }));
+  } catch {
+    /* no-op */
+  }
 }

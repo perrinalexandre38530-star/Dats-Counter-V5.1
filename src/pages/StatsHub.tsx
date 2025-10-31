@@ -1,13 +1,20 @@
-// ============================================ 
-// src/pages/StatsHub.tsx — Stats + Historique (reprise intégrée + overlay de manche)
+// ============================================
+// src/pages/StatsHub.tsx — Stats + Historique
+// (reprise intégrée + overlay de manche)
 // - Onglet Stats étoffé (Flèches, Moyenne & Max Points, Points, Checkout)
 // - Historique : LEG -> overlay, X01 FINISHED -> x01_end, IN_PROGRESS -> reprise
+// - Calculs de stats unifiés à partir de l'Historique (aggregateMatch)
 // ============================================
 
 import { useEffect, useMemo, useState } from "react";
 import { History } from "../lib/history";
-import { getLeaderboard, getPlayerMedallionStats, clearAllStats } from "../lib/stats";
 import EndOfLegOverlay from "../components/EndOfLegOverlay";
+import {
+  aggregateMatch,
+  type LegStats,
+  type MatchStats,
+  type PlayerId,
+} from "../lib/stats";
 
 /* --- Types légers --- */
 type PlayerLite = { id: string; name: string; avatarDataUrl?: string | null };
@@ -18,7 +25,8 @@ type SavedMatch = {
   players?: PlayerLite[];
   winnerId?: string | null;
   updatedAt: number;
-  payload?: any;     // pour kind === "leg": LegResult
+  legs?: any[];      // pour kind === "x01" (array de LegStats possiblement)
+  payload?: any;     // pour kind === "leg": LegResult (ancien schéma)
   [k: string]: any;
 };
 
@@ -33,14 +41,23 @@ export default function StatsHub(props: StatsHubProps) {
   const [tab, setTab] = useState<"stats" | "history">(props.tab ?? "stats");
 
   // ===== Historique (X01 + LEG) =====
-  const records = useMemo<SavedMatch[]>(() => {
-    try {
-      const list = (History.list?.() ?? []) as SavedMatch[];
-      return list.filter((r) => r && (r.kind === "x01" || r.kind === "leg"));
-    } catch {
-      return [];
-    }
+  const [records, setRecords] = useState<SavedMatch[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const all = await (History.getAll?.() ?? History.list?.() ?? []);
+        // Normalise : injecte un id si absent pour compat
+        const list: SavedMatch[] = (all as any[]).map((r: any) => ({
+          ...r,
+          id: r.id ?? r.matchId ?? crypto.randomUUID(),
+        }));
+        setRecords(list.filter((r) => r && (r.kind === "x01" || r.kind === "leg")));
+      } catch {
+        setRecords([]);
+      }
+    })();
   }, []);
+
   const sorted = useMemo(
     () => [...records].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
     [records]
@@ -50,13 +67,22 @@ export default function StatsHub(props: StatsHubProps) {
   const nameMap = useMemo(() => {
     const map: Record<string, string> = {};
     for (const p of props.profiles ?? []) if (p?.id) map[p.id] = p.name || p.id.slice(0, 8);
-    for (const rec of records) for (const p of rec.players ?? []) if (p?.id && !map[p.id]) map[p.id] = p.name || p.id.slice(0, 8);
+    for (const rec of records) {
+      for (const p of rec.players ?? []) {
+        if (p?.id && !map[p.id]) map[p.id] = p.name || p.id.slice(0, 8);
+      }
+    }
     return map;
   }, [props.profiles, records]);
+
   const avatarMap = useMemo(() => {
     const map: Record<string, string | null | undefined> = {};
     for (const p of props.profiles ?? []) if (p?.id) map[p.id] = p.avatarDataUrl ?? null;
-    for (const rec of records) for (const p of rec.players ?? []) if (p?.id && map[p.id] == null) map[p.id] = p.avatarDataUrl ?? null;
+    for (const rec of records) {
+      for (const p of rec.players ?? []) {
+        if (p?.id && map[p.id] == null) map[p.id] = p.avatarDataUrl ?? null;
+      }
+    }
     return map;
   }, [props.profiles, records]);
 
@@ -94,80 +120,157 @@ export default function StatsHub(props: StatsHubProps) {
 
   /* =========================
      ONGLET — STATS ÉTENDUES
+     (globales par joueur sur TOUT l'historique X01)
   ==========================*/
-  // Base = leaderboard par Avg3 → liste des joueurs connus avec avg3
-  const leaderboard = useMemo(() => getLeaderboard("avg3") ?? [], [tab]);
 
-  // Construit un dictionnaire stats par joueur
-  const statsById = useMemo(() => {
-    const out: Record<string, any> = {};
-    for (const row of leaderboard) {
-      const id = row.playerId ?? row.id ?? row.player ?? row;
-      try {
-        out[id] = getPlayerMedallionStats(id) ?? {};
-      } catch {
-        out[id] = {};
-      }
-      // conserve avg3 du leaderboard si absent dans la fiche
-      if (row?.avg3 != null && out[id].avg3 == null) out[id].avg3 = row.avg3;
-    }
-    return out;
-  }, [leaderboard]);
+  // 1) Collecte toutes les stats de match (aggregateMatch) et fusionne par joueur
+  type GlobalAgg = {
+    playerId: PlayerId;
+    matches: number;
+    legsPlayed: number;
+    legsWon: number;
 
-  // Helpers robustes (tolérance aux noms de champs)
-  const pick = (obj: any, ...keys: string[]) => {
-    for (const k of keys) if (obj && obj[k] != null) return obj[k];
-    return undefined;
+    darts: number;
+    visits: number;
+    totalScored: number;
+
+    bestVisit: number;
+    bins: { "60+": number; "100+": number; "140+": number; "180": number };
+
+    // tentatives / hits pour % dérivés
+    dblAtt: number; dblHit: number;
+    triAtt: number; triHit: number;
+    bullAtt: number; bullHit: number;
+    dbullAtt: number; dbullHit: number;
+
+    // checkout
+    coAtt: number; coHit: number; coHi: number; coDartsSum: number;
+
+    // first9: moyenne des moyennes de leg (pondérée "par leg")
+    first9Sum: number; first9Legs: number;
+
+    // min darts (best leg)
+    minDarts?: number;
   };
-  const nz = (v: any, d = 0) => (Number.isFinite(+v) ? +v : d);
-  const pct = (num: number, den: number) => (den > 0 ? (num / den) * 100 : 0);
 
-  // Tables prêtes
-  const tablePlayers = leaderboard.map((r: any, i: number) => {
-    const id = r.playerId ?? r.id ?? r.player ?? r;
-    const m = statsById[id] ?? {};
-    return {
-      rank: i + 1,
-      id,
-      name: nameOf(id),
-      darts: nz(pick(m, "dartsThrown", "darts", "totalDarts")),
-      // %DB / %TP
-      dblPct: (() => {
-        const made = nz(pick(m, "doubleMade", "doublesHit", "dbHits"));
-        const att = nz(pick(m, "doubleAttempts", "doublesTried", "dbAttempts"));
-        const alt = nz(pick(m, "doublePct", "dbPct"));
-        return alt > 0 ? alt : pct(made, att);
-      })(),
-      tplPct: (() => {
-        const made = nz(pick(m, "tripleMade", "triplesHit", "tpHits"));
-        const att = nz(pick(m, "tripleAttempts", "triplesTried", "tpAttempts"));
-        const alt = nz(pick(m, "triplePct", "tpPct"));
-        return alt > 0 ? alt : pct(made, att);
-      })(),
-      bullPct: nz(pick(m, "bullPct", "bullPercent")),
-      dbullPct: nz(pick(m, "dbullPct", "doubleBullPct")),
-      // Moyennes & max
-      avg3: nz(pick(m, "avg3", "average3")),
-      first9: nz(pick(m, "first9", "firstNineAvg", "first9Avg")),
-      maxPts: nz(pick(m, "maxPoints", "bestVisit", "highestVisit")),
-      // Bins
-      s60: nz(pick(m, "ton60", "s60", "hits60")),
-      s100: nz(pick(m, "ton100", "s100", "hits100")),
-      s140: nz(pick(m, "ton140", "s140", "hits140")),
-      s180: nz(pick(m, "ton180", "s180", "hits180")),
-      // Checkout
-      hiCO: nz(pick(m, "highestCheckout", "highCheckout", "maxCheckout")),
-      minDarts: nz(pick(m, "minDarts", "bestLegDarts")),
-      coPct: (() => {
-        const made = nz(pick(m, "checkoutMade", "coMade", "coHits"));
-        const att = nz(pick(m, "checkoutAttempts", "coAttempts"));
-        const alt = nz(pick(m, "checkoutPct", "coPct"));
-        return alt > 0 ? alt : pct(made, att);
-      })(),
-    };
-  });
+  const globals = useMemo(() => {
+    const map: Record<string, GlobalAgg> = {};
 
-  const hasAnyStats = tablePlayers.length > 0;
+    const x01Matches = records.filter((r) => r.kind === "x01" && Array.isArray(r.legs) && (r.players?.length ?? 0) > 0);
+
+    for (const rec of x01Matches) {
+      const legs: LegStats[] = (rec.legs as any[])
+        .map((l) => {
+          // enlève éventuel matchId dans les legs sauvegardés
+          const { matchId: _m, ...rest } = l ?? {};
+          return rest as LegStats;
+        })
+        .filter(Boolean);
+
+      const players: PlayerId[] =
+        rec.players?.map((p) => p.id) ??
+        Array.from(new Set(legs.flatMap((l) => l.players)));
+
+      if (!players.length || !legs.length) continue;
+
+      const match = aggregateMatch(legs, players);
+
+      for (const pid of players) {
+        const s = match.aggregates[pid];
+        if (!s) continue;
+
+        if (!map[pid]) {
+          map[pid] = {
+            playerId: pid,
+            matches: 0,
+            legsPlayed: 0,
+            legsWon: 0,
+            darts: 0,
+            visits: 0,
+            totalScored: 0,
+            bestVisit: 0,
+            bins: { "60+": 0, "100+": 0, "140+": 0, "180": 0 },
+            dblAtt: 0, dblHit: 0,
+            triAtt: 0, triHit: 0,
+            bullAtt: 0, bullHit: 0,
+            dbullAtt: 0, dbullHit: 0,
+            coAtt: 0, coHit: 0, coHi: 0, coDartsSum: 0,
+            first9Sum: 0, first9Legs: 0,
+            minDarts: undefined,
+          };
+        }
+
+        const g = map[pid];
+        g.matches += 1;
+        g.legsPlayed += s.legsPlayed;
+        g.legsWon += s.legsWon;
+
+        g.darts += s.darts;
+        g.visits += s.visits;
+        g.totalScored += s.totalScored;
+
+        g.bestVisit = Math.max(g.bestVisit, s.bestVisit);
+        g.bins["60+"] += s.bins["60+"]; g.bins["100+"] += s.bins["100+"]; g.bins["140+"] += s.bins["140+"]; g.bins["180"] += s.bins["180"];
+
+        g.dblAtt += s.rates.dblAttempts; g.dblHit += s.rates.dblHits;
+        g.triAtt += s.rates.triAttempts; g.triHit += s.rates.triHits;
+        g.bullAtt += s.rates.bullAttempts; g.bullHit += s.rates.bullHits;
+        g.dbullAtt += s.rates.dbullAttempts; g.dbullHit += s.rates.dbullHits;
+
+        g.coAtt += s.co.coAttempts; g.coHit += s.co.coHits;
+        g.coHi = Math.max(g.coHi, s.co.highestCO);
+        g.coDartsSum += s.co.totalCODarts;
+
+        g.first9Sum += s.first9Avg; // moyenne par leg (on somme les moyennes)
+        g.first9Legs += 1;
+
+        if (typeof s.minDartsToFinish === "number") {
+          g.minDarts = typeof g.minDarts === "number" ? Math.min(g.minDarts, s.minDartsToFinish) : s.minDartsToFinish;
+        }
+      }
+    }
+
+    // Transforme en tableau ordonné par avg3 DESC
+    const rows = Object.values(map).map((g) => {
+      const avg3 = g.visits > 0 ? g.totalScored / g.visits : 0;
+      const first9 = g.first9Legs > 0 ? g.first9Sum / g.first9Legs : 0;
+      const pct = (h: number, a: number) => (a > 0 ? (h / a) * 100 : 0);
+      const coPct = pct(g.coHit, g.coAtt);
+
+      return {
+        id: g.playerId,
+        name: nameOf(g.playerId),
+
+        // Flèches
+        darts: g.darts,
+        dblPct: pct(g.dblHit, g.dblAtt),
+        tplPct: pct(g.triHit, g.triAtt),
+        bullPct: pct(g.bullHit, g.bullAtt),
+        dbullPct: pct(g.dbullHit, g.dbullAtt),
+
+        // Moyennes & max
+        avg3,
+        first9,
+        maxPts: g.bestVisit,
+
+        // Bins
+        s60: g.bins["60+"],
+        s100: g.bins["100+"],
+        s140: g.bins["140+"],
+        s180: g.bins["180"],
+
+        // Checkout
+        hiCO: g.coHi,
+        minDarts: g.minDarts,
+        coPct,
+      };
+    });
+
+    rows.sort((a, b) => (b.avg3 || 0) - (a.avg3 || 0));
+    return rows.map((r, i) => ({ rank: i + 1, ...r }));
+  }, [records, nameMap]);
+
+  const hasAnyStats = globals.length > 0;
 
   // ===== UI wrappers =====
   const wrap = (children: any) => (
@@ -222,10 +325,10 @@ export default function StatsHub(props: StatsHubProps) {
                   <SectionHeader>Flèches</SectionHeader>
                   <DataTable
                     headers={["#", "Joueurs", "Flèches", "Double %", "Triple %", "Bull %", "DBull %"]}
-                    rows={tablePlayers.map((p) => [
+                    rows={globals.map((p) => [
                       p.rank,
                       p.name,
-                      p.darts,
+                      p.darts ?? 0,
                       fmtPct(p.dblPct),
                       fmtPct(p.tplPct),
                       fmtPct(p.bullPct),
@@ -239,11 +342,11 @@ export default function StatsHub(props: StatsHubProps) {
                   <SectionHeader>Moyenne et Max Points</SectionHeader>
                   <DataTable
                     headers={["#", "Joueurs", "Moyenne Ø", "Première-9 Ø", "Points Max"]}
-                    rows={tablePlayers.map((p) => [
+                    rows={globals.map((p) => [
                       p.rank,
                       p.name,
-                      p.avg3.toFixed(2),
-                      p.first9 ? p.first9.toFixed(2) : "—",
+                      (p.avg3 ?? 0).toFixed(2),
+                      p.first9 ? (p.first9 as number).toFixed(2) : "—",
                       p.maxPts || "—",
                     ])}
                   />
@@ -254,7 +357,7 @@ export default function StatsHub(props: StatsHubProps) {
                   <SectionHeader>Points</SectionHeader>
                   <DataTable
                     headers={["#", "Joueurs", "60+", "100+", "140+", "180"]}
-                    rows={tablePlayers.map((p) => [p.rank, p.name, p.s60, p.s100, p.s140, p.s180])}
+                    rows={globals.map((p) => [p.rank, p.name, p.s60, p.s100, p.s140, p.s180])}
                   />
                 </div>
 
@@ -263,11 +366,11 @@ export default function StatsHub(props: StatsHubProps) {
                   <SectionHeader>Checkout</SectionHeader>
                   <DataTable
                     headers={["#", "Joueurs", "Max Checkout", "Min Darts", "Checkout %"]}
-                    rows={tablePlayers.map((p) => [
+                    rows={globals.map((p) => [
                       p.rank,
                       p.name,
                       p.hiCO || 0,
-                      p.minDarts || "—",
+                      p.minDarts ?? "—",
                       fmtPct(p.coPct),
                     ])}
                   />
@@ -276,14 +379,14 @@ export default function StatsHub(props: StatsHubProps) {
                 <div style={{ textAlign: "right" }}>
                   <button
                     onClick={() => {
-                      if (confirm("Réinitialiser toutes les stats locales ?")) {
-                        clearAllStats();
+                      if (confirm("Réinitialiser les stats calculées (re-scan de l'historique) ?")) {
+                        // Pas de store séparé: on "recalcule" en rechargeant la page.
                         location.reload();
                       }
                     }}
                     style={dangerBtn}
                   >
-                    Vider les stats
+                    Recalculer
                   </button>
                 </div>
               </>

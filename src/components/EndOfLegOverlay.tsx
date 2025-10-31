@@ -1,14 +1,10 @@
 // ============================================
 // src/components/EndOfLegOverlay.tsx
 // Overlay "Classement de la manche" — compact + libellés FR
-// - Accordéons
-// - Tables compactes qui tiennent en largeur
-// - Renommages: "Stats rapides", "Stats Darts", "Stats globales"
-// - Colonnes: DB/TP/Bull/DBull + % dans "Stats globales"
-// - Résumé: vainqueur, Min Darts, Best Moy./3D, Best Volée, Best %DB, Best %TP, Best BULL
-// - Guards Recharts (montage seulement si conteneur >= 220×240)
-// - Respecte result.order sinon fallback (remaining ASC, avg3 DESC)
-// - Aucune TTS ici (silence depuis Historique/Stats)
+// (Version intégrée aux nouvelles stats: accepte LegResult *ou* LegStats)
+// - Accordéons, tables compactes, labels FR
+// - Raccord aux modules stats.ts / statsBridge (ordre, moyennes, %)
+// - Fallback propre si ancien LegResult (compat Historique/Stats)
 // ============================================
 
 import React from "react";
@@ -25,10 +21,14 @@ import {
   Radar,
 } from "recharts";
 
+import type { LegStats, PlayerId } from "../lib/stats";
+import { StatsSelectors } from "../lib/statsBridge";
+
 /* ---- Types légers (compat) ---- */
 type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };
 
-export type LegResult = {
+/* ---- Ancien schéma (compat) ---- */
+export type LegacyLegResult = {
   legNo: number;
   winnerId: string;
   order?: string[];
@@ -52,6 +52,16 @@ export type LegResult = {
   h180?: Record<string, number>;
 };
 
+type Props = {
+  open: boolean;
+  // Peut être l'ancien LegacyLegResult OU le nouveau LegStats
+  result: LegacyLegResult | LegStats | null;
+  playersById: Record<string, PlayerMini>;
+  onClose: () => void;
+  onReplay?: () => void;
+  onSave?: (res: LegacyLegResult | LegStats) => void;
+};
+
 /* ====== WRAPPER (sans hooks) ====== */
 export default function EndOfLegOverlay({
   open,
@@ -60,14 +70,7 @@ export default function EndOfLegOverlay({
   onClose,
   onReplay,
   onSave,
-}: {
-  open: boolean;
-  result: LegResult | null;
-  playersById: Record<string, PlayerMini>;
-  onClose: () => void;
-  onReplay?: () => void;
-  onSave?: (res: LegResult) => void;
-}) {
+}: Props) {
   if (!open || !result) return null;
   return (
     <OverlayInner
@@ -80,6 +83,108 @@ export default function EndOfLegOverlay({
   );
 }
 
+/* ---------------------------------------------
+   ADAPTATEURS: LegStats ⇄ Legacy view rows
+----------------------------------------------*/
+function isLegStats(x: any): x is LegStats {
+  return x && typeof x === "object" && x.perPlayer && x.players && Array.isArray(x.players);
+}
+
+function computeRemainingApprox(leg: LegStats, pid: PlayerId) {
+  // LegStats ne transporte pas "remaining": on approxime par startScore - totalScored (>=0)
+  const st = leg.perPlayer[pid];
+  const approx = Math.max(0, (leg.startScore ?? 0) - (st?.totalScored ?? 0));
+  return approx;
+}
+
+function legToRowsViaNewStats(leg: LegStats, nameOf: (id: string) => string) {
+  const order = StatsSelectors.legToLeaderboard(leg);
+  return order.map((pid, idx) => {
+    const s = leg.perPlayer[pid];
+    const row = StatsSelectors.legRow(leg, pid); // avg3, first9, best, bins, %*, CO etc.
+    const remaining = computeRemainingApprox(leg, pid);
+
+    return {
+      pid,
+      rank: idx + 1,
+      name: nameOf(pid),
+      remaining,
+      avg3: row.avg3 ?? 0,
+      best: row.best ?? 0,
+      darts: s?.darts ?? 0,
+      visits: s?.visits ?? 0,
+      x180: s?.bins?.["180"] ?? 0,
+      // "OB/IB" ≈ Bull/DBull (hits) côté nouvelles stats
+      ob: s?.rates?.bullHits ?? 0, // Outer Bull (25)
+      ib: s?.rates?.dbullHits ?? 0, // Inner Bull (50)
+      bulls: (s?.rates?.bullHits ?? 0) + (s?.rates?.dbullHits ?? 0),
+      doubles: s?.rates?.dblHits ?? 0, // compte hits (pas tentatives)
+      triples: s?.rates?.triHits ?? 0,
+      h60: s?.bins?.["60+"] ?? 0,
+      h100: s?.bins?.["100+"] ?? 0,
+      h140: s?.bins?.["140+"] ?? 0,
+      h180: s?.bins?.["180"] ?? 0,
+      coCount: s?.co?.coHits ?? 0,
+      coDartsAvg: s?.co?.avgCODarts ?? 0,
+      highestCO: s?.co?.highestCO ?? 0,
+      // % déjà calculés côté legRow
+      pDB: `${row.pctDB}%`,
+      pTP: `${row.pctTP}%`,
+      pBull: `${row.pctBull}%`,
+      pDBull: `${row.pctDBull}%`,
+    };
+  });
+}
+
+function legToRowsViaLegacy(res: LegacyLegResult, nameOf: (id: string) => string) {
+  const ids = Object.keys(res.remaining || {});
+  const order = Array.isArray(res.order) && res.order.length ? res.order.slice() : ids.slice().sort((a, b) => {
+    const ra = res.remaining?.[a] ?? Number.POSITIVE_INFINITY;
+    const rb = res.remaining?.[b] ?? Number.POSITIVE_INFINITY;
+    if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
+    const aa = res.avg3?.[a] ?? 0;
+    const ab = res.avg3?.[b] ?? 0;
+    return ab - aa;
+  });
+
+  const get = (obj: Record<string, number | undefined> | undefined, k: string) => obj?.[k] ?? 0;
+
+  return order.map((pid, i) => {
+    const ob = res.hitsBySector?.[pid]?.["OB"] ?? 0;
+    const ib = res.hitsBySector?.[pid]?.["IB"] ?? 0;
+    const darts = get(res.darts, pid);
+    const pct = (a: number, b: number) => (b > 0 ? ((a / b) * 100).toFixed(1) + "%" : "0.0%");
+
+    return {
+      pid,
+      rank: i + 1,
+      name: nameOf(pid),
+      remaining: get(res.remaining, pid),
+      avg3: get(res.avg3, pid),
+      best: res.bestVisit?.[pid] ?? 0,
+      darts,
+      visits: get(res.visits, pid),
+      x180: res.x180?.[pid] ?? 0,
+      doubles: res.doubles?.[pid] ?? 0,
+      triples: res.triples?.[pid] ?? 0,
+      ob,
+      ib,
+      bulls: ob + ib,
+      h60: res.h60?.[pid] ?? 0,
+      h100: res.h100?.[pid] ?? 0,
+      h140: res.h140?.[pid] ?? 0,
+      h180: res.h180?.[pid] ?? 0,
+      coCount: res.checkoutDartsByPlayer?.[pid]?.length ?? 0,
+      coDartsAvg: avg(res.checkoutDartsByPlayer?.[pid]),
+      highestCO: res.bestCheckout?.[pid] ?? 0,
+      pDB: pct(res.doubles?.[pid] ?? 0, darts),
+      pTP: pct(res.triples?.[pid] ?? 0, darts),
+      pBull: pct(ob, darts),
+      pDBull: pct(ib, darts),
+    };
+  });
+}
+
 /* ====== INNER (avec hooks) ====== */
 function OverlayInner({
   result,
@@ -88,11 +193,11 @@ function OverlayInner({
   onReplay,
   onSave,
 }: {
-  result: LegResult;
+  result: LegacyLegResult | LegStats;
   playersById: Record<string, PlayerMini>;
   onClose: () => void;
   onReplay?: () => void;
-  onSave?: (res: LegResult) => void;
+  onSave?: (res: LegacyLegResult | LegStats) => void;
 }) {
   const nameOf = React.useCallback(
     (id?: string | null) => playersById[id || ""]?.name ?? (id ? id : "—"),
@@ -106,79 +211,29 @@ function OverlayInner({
   // ---- helpers numériques & % ----
   const num = (n?: number | null) =>
     typeof n === "number" && isFinite(n) ? n : 0;
-  const pct = (a: number, b: number) =>
-    b > 0 ? ((a / b) * 100).toFixed(1) + "%" : "0.0%";
   const fmt2 = (n?: number | null) =>
     typeof n === "number" && isFinite(n) ? (Math.round(n * 100) / 100).toFixed(2) : "0.00";
   const avg = (arr?: number[]) =>
     arr && arr.length ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100 : 0;
 
-  // ---- ordre fiable: use result.order si dispo, sinon tri fallback
-  const allIds = React.useMemo(
-    () => Object.keys(result?.remaining || {}),
-    [result?.remaining]
-  );
-  const safeOrder: string[] = React.useMemo(() => {
-    if (Array.isArray(result.order) && result.order.length) return result.order.slice();
-    // fallback: remaining ASC, tie-break avg3 DESC
-    return allIds
-      .slice()
-      .sort((a, b) => {
-        const ra = result.remaining?.[a] ?? Number.POSITIVE_INFINITY;
-        const rb = result.remaining?.[b] ?? Number.POSITIVE_INFINITY;
-        if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
-        if (ra !== rb) return ra - rb;
-        const aa = result.avg3?.[a] ?? 0;
-        const ab = result.avg3?.[b] ?? 0;
-        return ab - aa;
-      });
-  }, [result.order, result.remaining, result.avg3, allIds]);
-
-  // ---- rows + dérivés (OB/IB & %) ----
+  // ---- rows + ordre via nouvelle API ou legacy
   const rows = React.useMemo(() => {
-    return safeOrder.map((pid, i) => {
-      const darts = num(result?.darts?.[pid]);
-      const doubles = num(result?.doubles?.[pid]);
-      const triples = num(result?.triples?.[pid]);
+    if (isLegStats(result)) return legToRowsViaNewStats(result, nameOf);
+    return legToRowsViaLegacy(result as LegacyLegResult, nameOf);
+  }, [result, nameOf]);
 
-      const hits = result?.hitsBySector?.[pid] || {};
-      const ob = num(hits["OB"]);
-      const ib = num(hits["IB"]);
-      const bulls = ob + ib;
+  // ---- winner / meta
+  const winnerId = React.useMemo(() => {
+    if (isLegStats(result)) return result.winnerId ?? rows[0]?.pid ?? null;
+    return (result as LegacyLegResult).winnerId ?? rows[0]?.pid ?? null;
+  }, [result, rows]);
 
-      return {
-        pid,
-        rank: i + 1,
-        name: nameOf(pid),
-        remaining: result?.remaining?.[pid] ?? 0,
-        avg3: num(result?.avg3?.[pid]),
-        best: num(result?.bestVisit?.[pid]),
-        darts,
-        visits: num(result?.visits?.[pid]),
-        x180: num(result?.x180?.[pid]),
-        doubles,
-        triples,
-        bulls,
-        ob,
-        ib,
-        h60: num(result?.h60?.[pid]),
-        h100: num(result?.h100?.[pid]),
-        h140: num(result?.h140?.[pid]),
-        h180: num(result?.h180?.[pid]),
-        coCount: result?.checkoutDartsByPlayer?.[pid]?.length ?? 0,
-        coDartsAvg: avg(result?.checkoutDartsByPlayer?.[pid]),
-        // % :
-        pDB: pct(doubles, darts),
-        pTP: pct(triples, darts),
-        pBull: pct(ob, darts),
-        pDBull: pct(ib, darts),
-      };
-    });
-  }, [safeOrder, result, nameOf]);
+  const legNo = isLegStats(result) ? result.legNo : (result as LegacyLegResult).legNo;
+  const finishedAt = isLegStats(result)
+    ? (result.finishedAt ?? Date.now())
+    : (result as LegacyLegResult).finishedAt;
 
   // ---- Best-of pour Résumé
-  const winnerId = result?.winnerId ?? safeOrder[0] ?? null;
-
   const minDarts = Math.min(...rows.map((r) => (r.darts > 0 ? r.darts : Infinity)));
   const minDartsRow = rows.find((r) => r.darts === minDarts);
 
@@ -188,11 +243,16 @@ function OverlayInner({
   const bestVol = Math.max(...rows.map((r) => r.best || 0));
   const bestVolRow = rows.find((r) => r.best === bestVol);
 
-  const bestPDB = Math.max(...rows.map((r) => parseFloat(r.pDB) || 0));
-  const bestPDBRow = rows.find((r) => parseFloat(r.pDB) === bestPDB) ?? null;
+  const parsePct = (s: string) => {
+    const n = parseFloat(String(s).replace("%", ""));
+    return isFinite(n) ? n : 0;
+  };
 
-  const bestPTP = Math.max(...rows.map((r) => parseFloat(r.pTP) || 0));
-  const bestPTPRow = rows.find((r) => parseFloat(r.pTP) === bestPTP) ?? null;
+  const bestPDB = Math.max(...rows.map((r) => parsePct(r.pDB)));
+  const bestPDBRow = rows.find((r) => parsePct(r.pDB) === bestPDB) ?? null;
+
+  const bestPTP = Math.max(...rows.map((r) => parsePct(r.pTP)));
+  const bestPTPRow = rows.find((r) => parsePct(r.pTP) === bestPTP) ?? null;
 
   const bestBullTotal = Math.max(...rows.map((r) => r.bulls || 0));
   const bestBullRow = rows.find((r) => r.bulls === bestBullTotal);
@@ -202,17 +262,23 @@ function OverlayInner({
     () => rows.map((r) => ({ name: r.name, avg3: Number(fmt2(r.avg3)) })),
     [rows]
   );
+
+  // Radar: si ancien hitsBySector disponible, on garde la logique
   const radarKeys = React.useMemo(() => {
-    const m = result?.hitsBySector || {};
-    const first = safeOrder[0];
-    if (!first || !m[first]) return null;
-    const entries = Object.entries(m[first])
-      .filter(([k]) => k !== "MISS") // utile
-      .sort((a, b) => (b[1] as number) - (a[1] as number))
-      .slice(0, 12)
-      .map(([k]) => k);
-    return entries.length ? entries : null;
-  }, [result, safeOrder]);
+    if (!isLegStats(result)) {
+      const res = result as LegacyLegResult;
+      const first = rows[0]?.pid;
+      const m = res.hitsBySector || {};
+      if (!first || !m[first]) return null;
+      const entries = Object.entries(m[first])
+        .filter(([k]) => k !== "MISS")
+        .sort((a, b) => (b[1] as number) - (a[1] as number))
+        .slice(0, 12)
+        .map(([k]) => k);
+      return entries.length ? entries : null;
+    }
+    return null; // pas de radar côté nouvelles stats (pas de per-sector)
+  }, [result, rows]);
 
   // ---- UI
   return (
@@ -227,6 +293,7 @@ function OverlayInner({
         alignItems: "center",
         justifyContent: "center",
         padding: 12,
+        color: "#e7e7e7",
       }}
       role="dialog"
       aria-modal="true"
@@ -241,8 +308,7 @@ function OverlayInner({
           background: "linear-gradient(180deg, #17181c, #101116)",
           border: "1px solid rgba(255,255,255,.08)",
           boxShadow: "0 16px 44px rgba(0,0,0,.45)",
-          color: "#e7e7e7",
-          fontSize: 12, // compact
+          fontSize: 12,
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -263,10 +329,10 @@ function OverlayInner({
           }}
         >
           <div style={{ fontWeight: 900, color: "#f0b12a", fontSize: 14 }}>
-            Classement de la manche
+            Classement de la manche #{legNo}
           </div>
           <div style={{ opacity: 0.7, fontSize: 11, marginLeft: 6 }}>
-            Manche terminée — {new Date(result?.finishedAt ?? Date.now()).toLocaleTimeString()}
+            Manche terminée — {new Date(finishedAt ?? Date.now()).toLocaleTimeString()}
           </div>
           <div style={{ flex: 1 }} />
           <button onClick={onClose} title="Fermer" style={btn("transparent", "#ddd", "#ffffff22")}>
@@ -276,7 +342,7 @@ function OverlayInner({
 
         {/* Corps */}
         <div style={{ padding: 10, paddingTop: 8 }}>
-          {/* Classement (liste compacte, pas de <tr> ici) */}
+          {/* Classement (liste compacte) */}
           <div
             style={{
               borderRadius: 10,
@@ -287,7 +353,7 @@ function OverlayInner({
           >
             {rows.map((r) => {
               const avatar = avatarOf(r.pid);
-              const finished = (result?.remaining?.[r.pid] ?? 0) === 0;
+              const finished = (r.remaining ?? 0) === 0;
               return (
                 <div
                   key={r.pid}
@@ -349,7 +415,7 @@ function OverlayInner({
                   </div>
                   <div style={{ fontWeight: 800, color: "#ffcf57", fontSize: 13 }}>{r.name}</div>
                   <div style={{ fontWeight: 900, color: finished ? "#7fe2a9" : "#ffcf57" }}>
-                    {finished ? "0" : result?.remaining?.[r.pid] ?? "—"}
+                    {finished ? "0" : r.remaining ?? "—"}
                   </div>
                 </div>
               );
@@ -358,70 +424,23 @@ function OverlayInner({
 
           {/* ===== Accordéons ===== */}
           <Accordion title="Résumé de la partie" defaultOpen>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <KV label="Vainqueur" value={nameOf(winnerId)} strong />
-              <KV
-                label="Min Darts"
-                value={
-                  isFinite(minDarts) && minDartsRow ? (
-                    <span><b style={{ color: "#ffcf57" }}>{minDartsRow.name}</b> — {minDartsRow.darts}</span>
-                  ) : "—"
-                }
-                right
-              />
-              <KV
-                label="Best Moy./3D"
-                value={
-                  bestAvgRow ? (
-                    <span><b style={{ color: "#ffcf57" }}>{bestAvgRow.name}</b> — {fmt2(bestAvgRow.avg3)}</span>
-                  ) : "—"
-                }
-              />
-              <KV
-                label="Best Volée"
-                value={
-                  bestVolRow ? (
-                    <span><b style={{ color: "#ffcf57" }}>{bestVolRow.name}</b> — {bestVolRow.best}</span>
-                  ) : "—"
-                }
-                right
-              />
-              <KV
-                label="Best %DB"
-                value={
-                  bestPDBRow ? (
-                    <span><b style={{ color: "#ffcf57" }}>{bestPDBRow.name}</b> — {bestPDBRow.pDB}</span>
-                  ) : "—"
-                }
-              />
-              <KV
-                label="Best %TP"
-                value={
-                  bestPTPRow ? (
-                    <span><b style={{ color: "#ffcf57" }}>{bestPTPRow.name}</b> — {bestPTPRow.pTP}</span>
-                  ) : "—"
-                }
-                right
-              />
-              <KV
-                label="Best BULL"
-                value={
-                  bestBullRow ? (
-                    <span>
-                      <b style={{ color: "#ffcf57" }}>{bestBullRow.name}</b> — {bestBullRow.bulls}
-                      <span style={{ opacity: 0.8 }}> ({bestBullRow.ob} + {bestBullRow.ib})</span>
-                    </span>
-                  ) : "—"
-                }
-              />
-            </div>
+            <SummaryRows
+              winnerName={nameOf(winnerId || "")}
+              minDartsRow={minDartsRow}
+              bestAvgRow={bestAvgRow}
+              bestVolRow={bestVolRow}
+              bestPDBRow={bestPDBRow}
+              bestPTPRow={bestPTPRow}
+              bestBullRow={bestBullRow}
+              fmt2={fmt2}
+            />
           </Accordion>
 
           <Accordion title="Stats rapides">
             <div style={{ overflowX: "auto" }}>
               <table style={tableBase}>
                 <thead>
-                  <tr /* no text here */>
+                  <tr>
                     <TH>Joueur</TH>
                     <TH>Volées</TH>
                     <TH>Darts</TH>
@@ -446,7 +465,7 @@ function OverlayInner({
                       <TD>{r.h140}</TD>
                       <TD>{r.h180}</TD>
                       <TD>{r.best}</TD>
-                      <TD>{result?.bestCheckout?.[r.pid] ?? 0}</TD>
+                      <TD>{r.highestCO ?? 0}</TD>
                     </tr>
                   ))}
                 </tbody>
@@ -530,7 +549,7 @@ function OverlayInner({
                         <RadarChart
                           data={radarKeys.map((k) => ({
                             sector: k,
-                            v: result?.hitsBySector?.[safeOrder[0]]?.[k] ?? 0,
+                            v: (result as LegacyLegResult)?.hitsBySector?.[rows[0]?.pid ?? ""]?.[k] ?? 0,
                           }))}
                         >
                           <PolarGrid />
@@ -583,6 +602,100 @@ function OverlayInner({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- Résumé bloc ---------- */
+function SummaryRows({
+  winnerName,
+  minDartsRow,
+  bestAvgRow,
+  bestVolRow,
+  bestPDBRow,
+  bestPTPRow,
+  bestBullRow,
+  fmt2,
+}: any) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+      <KV label="Vainqueur" value={winnerName} strong />
+      <KV
+        label="Min Darts"
+        value={
+          isFinite(minDartsRow?.darts) ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{minDartsRow.name}</b> — {minDartsRow.darts}
+            </span>
+          ) : (
+            "—"
+          )
+        }
+        right
+      />
+      <KV
+        label="Best Moy./3D"
+        value={
+          bestAvgRow ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{bestAvgRow.name}</b> — {fmt2(bestAvgRow.avg3)}
+            </span>
+          ) : (
+            "—"
+          )
+        }
+      />
+      <KV
+        label="Best Volée"
+        value={
+          bestVolRow ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{bestVolRow.name}</b> — {bestVolRow.best}
+            </span>
+          ) : (
+            "—"
+          )
+        }
+        right
+      />
+      <KV
+        label="Best %DB"
+        value={
+          bestPDBRow ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{bestPDBRow.name}</b> — {bestPDBRow.pDB}
+            </span>
+          ) : (
+            "—"
+          )
+        }
+      />
+      <KV
+        label="Best %TP"
+        value={
+          bestPTPRow ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{bestPTPRow.name}</b> — {bestPTPRow.pTP}
+            </span>
+          ) : (
+            "—"
+          )
+        }
+        right
+      />
+      <KV
+        label="Best BULL"
+        value={
+          bestBullRow ? (
+            <span>
+              <b style={{ color: "#ffcf57" }}>{bestBullRow.name}</b> — {bestBullRow.bulls}
+              <span style={{ opacity: 0.8 }}> ({bestBullRow.ob} + {bestBullRow.ib})</span>
+            </span>
+          ) : (
+            "—"
+          )
+        }
+      />
     </div>
   );
 }
