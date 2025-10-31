@@ -1,6 +1,14 @@
+// ============================================
+// src/pages/Profiles.tsx
+// Profils (profil actif, amis, profils locaux)
+// - Intègre MiniStats sous chaque profil
+// - Récupère des stats basiques via statsBridge (cache local)
+// ============================================
+
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile, Friend } from "../lib/types";
+import { MiniStats } from "../components/MiniStats";
 
 // ★ NEW: stats basiques unifiées (History ⇄ Stats)
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
@@ -77,7 +85,7 @@ export default function Profiles({
           setStatsMap((m) => ({ ...m, [pid]: s }));
         }
       } catch {
-        /* no-op: on garde l’UI */
+        /* no-op */
       }
     })();
     return () => {
@@ -148,9 +156,15 @@ export default function Profiles({
 
               {/* Stats principales (★ reliées aux stats unifiées) */}
               <div className="subtitle" style={{ marginTop: 6, whiteSpace: "nowrap" }}>
-                {/* fallback propre si pas encore calculé */}
                 Moy/3: {fmt(activeStats?.avg3 ?? 0)} · Best: {activeStats?.bestVisit ?? 0} · Win: {winPctFromBasics(activeStats)}
               </div>
+
+              {/* ★ MiniStats (profil actif) */}
+              {active?.id && (
+                <div style={{ marginTop: 8, width: "100%" }}>
+                  <MiniStats profileId={active.id} />
+                </div>
+              )}
 
               {/* Actions compactes sous les stats (une ligne, centrée) */}
               <div
@@ -531,6 +545,11 @@ function LocalProfiles({
                     <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
                       {/* ★ affiche les stats unifiées si présentes, sinon fallback éventuel */}
                       Moy/3: {fmt(s?.avg3 ?? 0)} · Best: {s?.bestVisit ?? 0} · Win: {winPctFromBasics(s)}
+                    </div>
+
+                    {/* ★ MiniStats (profil local) */}
+                    <div style={{ marginTop: 6 }}>
+                      <MiniStats profileId={p.id} />
                     </div>
                   </>
                 )}

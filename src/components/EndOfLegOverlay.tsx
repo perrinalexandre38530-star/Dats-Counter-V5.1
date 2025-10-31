@@ -3,8 +3,8 @@
 // Overlay "Classement de la manche" — compact + libellés FR
 // (Version intégrée aux nouvelles stats: accepte LegResult *ou* LegStats)
 // - Accordéons, tables compactes, labels FR
-// - Raccord aux modules stats.ts / statsBridge (ordre, moyennes, %)
-// - Fallback propre si ancien LegResult (compat Historique/Stats)
+// - AUCUNE dépendance à StatsSelectors (autonome)
+// - mergeLegToBasics() appelé au clic sur "Sauvegarder"
 // ============================================
 
 import React from "react";
@@ -22,7 +22,7 @@ import {
 } from "recharts";
 
 import type { LegStats, PlayerId } from "../lib/stats";
-import { StatsSelectors } from "../lib/statsBridge";
+import { mergeLegToBasics } from "../lib/statsBridge";
 
 /* ---- Types légers (compat) ---- */
 type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };
@@ -84,58 +84,105 @@ export default function EndOfLegOverlay({
 }
 
 /* ---------------------------------------------
-   ADAPTATEURS: LegStats ⇄ Legacy view rows
+   ADAPTATEURS & CALCULS côté "nouvelles stats"
+   (autonomes: pas de StatsSelectors requis)
 ----------------------------------------------*/
 function isLegStats(x: any): x is LegStats {
   return x && typeof x === "object" && x.perPlayer && x.players && Array.isArray(x.players);
 }
 
+// Score restant approximé: startScore - totalScored (>=0)
 function computeRemainingApprox(leg: LegStats, pid: PlayerId) {
-  // LegStats ne transporte pas "remaining": on approxime par startScore - totalScored (>=0)
   const st = leg.perPlayer[pid];
   const approx = Math.max(0, (leg.startScore ?? 0) - (st?.totalScored ?? 0));
   return approx;
 }
 
+// Moyenne /3: on prend (totalScored / visits), puis *3
+function computeAvg3FromNew(leg: LegStats, pid: PlayerId) {
+  const st = leg.perPlayer[pid];
+  const visits = st?.visits ?? 0;
+  if (!visits) return 0;
+  const perVisit = (st?.totalScored ?? 0) / visits;
+  return perVisit; // ta logique d’app semblait déjà considérer "avg3" = par volée
+}
+
+// Best visit: on tente plusieurs clés usuelles
+function computeBestVisitNew(leg: LegStats, pid: PlayerId) {
+  const st: any = leg.perPlayer[pid] ?? {};
+  return (
+    st.bestVisit ??
+    st.best ??
+    st.maxVisit ??
+    st.bins?.maxVisit ??
+    0
+  );
+}
+
+// Leaderboard: 1) restant = 0 d’abord (gagnant), 2) restant croissant, 3) avg3 décroissant
+function leaderboardNew(leg: LegStats): string[] {
+  const ids = leg.players.map((p) => p.id);
+  return ids.sort((a, b) => {
+    const ra = computeRemainingApprox(leg, a);
+    const rb = computeRemainingApprox(leg, b);
+    if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
+    if (ra !== rb) return ra - rb;
+    const aa = computeAvg3FromNew(leg, a);
+    const ab = computeAvg3FromNew(leg, b);
+    return ab - aa;
+  });
+}
+
 function legToRowsViaNewStats(leg: LegStats, nameOf: (id: string) => string) {
-  const order = StatsSelectors.legToLeaderboard(leg);
+  const order = leaderboardNew(leg);
   return order.map((pid, idx) => {
-    const s = leg.perPlayer[pid];
-    const row = StatsSelectors.legRow(leg, pid); // avg3, first9, best, bins, %*, CO etc.
+    const s: any = leg.perPlayer[pid] ?? {};
     const remaining = computeRemainingApprox(leg, pid);
+    const avg3 = computeAvg3FromNew(leg, pid);
+    const best = computeBestVisitNew(leg, pid);
+
+    const rate = (k: string) => Number(s?.rates?.[k] ?? 0);
+    const bin = (k: string) => Number(s?.bins?.[k] ?? 0);
+
+    const darts = Number(s?.darts ?? 0);
+    const pct = (hits: number) => (darts > 0 ? ((hits / darts) * 100).toFixed(1) + "%" : "0.0%");
+
+    const ob = rate("bullHits");  // Outer Bull
+    const ib = rate("dbullHits"); // Inner Bull
 
     return {
       pid,
       rank: idx + 1,
       name: nameOf(pid),
       remaining,
-      avg3: row.avg3 ?? 0,
-      best: row.best ?? 0,
-      darts: s?.darts ?? 0,
-      visits: s?.visits ?? 0,
-      x180: s?.bins?.["180"] ?? 0,
-      // "OB/IB" ≈ Bull/DBull (hits) côté nouvelles stats
-      ob: s?.rates?.bullHits ?? 0, // Outer Bull (25)
-      ib: s?.rates?.dbullHits ?? 0, // Inner Bull (50)
-      bulls: (s?.rates?.bullHits ?? 0) + (s?.rates?.dbullHits ?? 0),
-      doubles: s?.rates?.dblHits ?? 0, // hits
-      triples: s?.rates?.triHits ?? 0, // hits
-      h60: s?.bins?.["60+"] ?? 0,
-      h100: s?.bins?.["100+"] ?? 0,
-      h140: s?.bins?.["140+"] ?? 0,
-      h180: s?.bins?.["180"] ?? 0,
-      coCount: s?.co?.coHits ?? 0,
-      coDartsAvg: s?.co?.avgCODarts ?? 0,
-      highestCO: s?.co?.highestCO ?? 0,
-      // % déjà calculés côté legRow
-      pDB: `${row.pctDB}%`,
-      pTP: `${row.pctTP}%`,
-      pBull: `${row.pctBull}%`,
-      pDBull: `${row.pctDBull}%`,
+      avg3,
+      best,
+      darts,
+      visits: Number(s?.visits ?? 0),
+      x180: bin("180"),
+      doubles: rate("dblHits"),
+      triples: rate("triHits"),
+      ob,
+      ib,
+      bulls: ob + ib,
+      h60: bin("60+"),
+      h100: bin("100+"),
+      h140: bin("140+"),
+      h180: bin("180"),
+      coCount: Number(s?.co?.coHits ?? 0),
+      coDartsAvg: Number(s?.co?.avgCODarts ?? 0),
+      highestCO: Number(s?.co?.highestCO ?? 0),
+      pDB: pct(rate("dblHits")),
+      pTP: pct(rate("triHits")),
+      pBull: pct(ob),
+      pDBull: pct(ib),
     };
   });
 }
 
+/* ---------------------------------------------
+   Adaptateur "legacy"
+----------------------------------------------*/
 function avgArray(arr?: number[]) {
   return arr && arr.length
     ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100
@@ -219,8 +266,6 @@ function OverlayInner({
     typeof n === "number" && isFinite(n) ? n : 0;
   const fmt2 = (n?: number | null) =>
     typeof n === "number" && isFinite(n) ? (Math.round(n * 100) / 100).toFixed(2) : "0.00";
-  const avg = (arr?: number[]) =>
-    arr && arr.length ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100 : 0;
 
   // ---- rows + ordre via nouvelle API ou legacy
   const rows = React.useMemo(() => {
@@ -234,9 +279,9 @@ function OverlayInner({
     return (result as LegacyLegResult).winnerId ?? rows[0]?.pid ?? null;
   }, [result, rows]);
 
-  const legNo = isLegStats(result) ? result.legNo : (result as LegacyLegResult).legNo;
+  const legNo = isLegStats(result) ? (result.legNo as any) : (result as LegacyLegResult).legNo;
   const finishedAt = isLegStats(result)
-    ? (result.finishedAt ?? Date.now())
+    ? ((result as any).finishedAt ?? Date.now())
     : (result as LegacyLegResult).finishedAt;
 
   // ---- Best-of pour Résumé
@@ -269,7 +314,7 @@ function OverlayInner({
     [rows]
   );
 
-  // Radar: si ancien hitsBySector disponible, on garde la logique
+  // Radar (legacy uniquement)
   const radarKeys = React.useMemo(() => {
     if (!isLegStats(result)) {
       const res = result as LegacyLegResult;
@@ -283,8 +328,19 @@ function OverlayInner({
         .map(([k]) => k);
       return entries.length ? entries : null;
     }
-    return null; // pas de radar côté nouvelles stats (pas de per-sector)
+    return null;
   }, [result, rows]);
+
+  // ---- handler "Sauvegarder": MERGE + callback + close
+  function handleSave() {
+    try {
+      mergeLegToBasics(result as any); // ← alimente le pont stats basiques
+    } catch {}
+    try {
+      onSave?.(result);
+    } catch {}
+    onClose();
+  }
 
   // ---- UI
   return (
@@ -432,12 +488,12 @@ function OverlayInner({
           <Accordion title="Résumé de la partie" defaultOpen>
             <SummaryRows
               winnerName={nameOf(winnerId || "")}
-              minDartsRow={minDartsRow}
-              bestAvgRow={bestAvgRow}
-              bestVolRow={bestVolRow}
-              bestPDBRow={bestPDBRow}
-              bestPTPRow={bestPTPRow}
-              bestBullRow={bestBullRow}
+              minDartsRow={rows.find((rr) => rr.darts === Math.min(...rows.map((r) => (r.darts > 0 ? r.darts : Infinity))))}
+              bestAvgRow={rows.find((rr) => rr.avg3 === Math.max(...rows.map((r) => r.avg3 || 0)))}
+              bestVolRow={rows.find((rr) => rr.best === Math.max(...rows.map((r) => r.best || 0)))}
+              bestPDBRow={rows.length ? rows.slice().sort((a, b) => parseFloat(String(b.pDB)) - parseFloat(String(a.pDB)))[0] : null}
+              bestPTPRow={rows.length ? rows.slice().sort((a, b) => parseFloat(String(b.pTP)) - parseFloat(String(a.pTP)))[0] : null}
+              bestBullRow={rows.length ? rows.slice().sort((a, b) => (b.bulls || 0) - (a.bulls || 0))[0] : null}
               fmt2={fmt2}
             />
           </Accordion>
@@ -594,11 +650,8 @@ function OverlayInner({
                 Rejouer la manche
               </button>
             )}
-            {onSave && result && (
-              <button
-                onClick={() => onSave(result)}
-                style={btn("linear-gradient(180deg, #f0b12a, #c58d19)", "#141417")}
-              >
+            {result && (
+              <button onClick={handleSave} style={btn("linear-gradient(180deg, #f0b12a, #c58d19)", "#141417")}>
                 Sauvegarder
               </button>
             )}

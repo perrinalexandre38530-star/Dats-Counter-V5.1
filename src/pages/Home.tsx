@@ -1,3 +1,11 @@
+// ============================================
+// src/pages/Home.tsx
+// Accueil + Carte profil (stats unifiées)
+// - Chargement tolérant (store partiel)
+// - Raccourcis jeux
+// - Mini cache local des BasicProfileStats (statsBridge)
+// ============================================
+
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile } from "../lib/types";
@@ -312,7 +320,7 @@ function StatMini({ label, value }: { label: string; value: string }) {
   );
 }
 
-/* ---------- Mini stat en ligne ---------- */
+/* ---------- Mini stat en ligne (libre) ---------- */
 function Stat({ title, value }: { title: string; value: string }) {
   return (
     <div style={{ textAlign: "left" }}>

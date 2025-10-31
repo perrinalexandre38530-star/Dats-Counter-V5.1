@@ -6,6 +6,8 @@ import BottomNav from "./components/BottomNav";
 
 // Persistance (IndexedDB via storage.ts)
 import { loadStore, saveStore } from "./lib/storage";
+// OPFS / StorageManager — demande la persistance une fois au boot
+import { ensurePersisted } from "./lib/deviceStore";
 
 // Types
 import type { Store, Profile, MatchRecord } from "./lib/types";
@@ -39,7 +41,7 @@ type Tab =
   | "settings"
   | "x01setup"
   | "x01"
-  | "x01_end"   // 👈 ajouté
+  | "x01_end"
   | "cricket"
   | "killer"
   | "shanghai";
@@ -159,6 +161,11 @@ export default function App() {
   const [tab, setTab] = React.useState<Tab>("home");
   const [routeParams, setRouteParams] = React.useState<any>(null);
   const [loading, setLoading] = React.useState(true);
+
+  // Demander la persistance de stockage une fois au boot (silencieux si déjà accordée)
+  React.useEffect(() => {
+    ensurePersisted().catch(() => {});
+  }, []);
 
   // Mémo config X01
   const [x01Config, setX01Config] = React.useState<{
@@ -367,7 +374,7 @@ export default function App() {
         }
         break;
 
-      case "x01_end": // 👈 nouvelle route : tableau de fin de partie (lecture seule)
+      case "x01_end":
         page = <X01End go={go} params={routeParams} />;
         break;
 
