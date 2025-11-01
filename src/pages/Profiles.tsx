@@ -1,16 +1,15 @@
 // ============================================
 // src/pages/Profiles.tsx
 // Profils (profil actif, amis fusionnés, profils locaux)
-// - Nouveau bloc unique Connexion/Création (sans mot de passe)
+// - Bloc unique Connexion/Création (sans mot de passe)
 // - Amis: un seul panneau repliable "Amis (N)" trié par statut
-// - Profils locaux: compteur dans le titre, mini-stats sur une ligne,
-//   bouton "Éditer" au-dessus de "Suppr."
+// - Profils locaux: compteur, mini-stats ruban doré, Éditer au-dessus de Suppr.
 // ============================================
 
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile, Friend } from "../lib/types";
-import { MiniStats } from "../components/MiniStats";
+// ❌ plus d'import MiniStats
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
 
 /* ================================
@@ -69,7 +68,7 @@ export default function Profiles({
 
   const active = profiles.find((p) => p.id === activeProfileId) || null;
 
-  // Cache des stats du profil actif (pour MiniStats si besoin)
+  // Cache stats du profil actif
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -80,9 +79,7 @@ export default function Profiles({
         if (!cancelled) setStatsMap((m) => ({ ...m, [pid]: s }));
       } catch {}
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
@@ -121,7 +118,6 @@ export default function Profiles({
       {/* ===== Profils locaux ===== */}
       <Card title={`Profils locaux (${profiles.length})`}>
         <AddLocalProfile onCreate={addProfile} />
-
         <div
           style={{
             maxHeight: "min(44vh, 420px)",
@@ -163,7 +159,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-/* ------ Bloc actif (mini-boutons dorés uniquement) ------ */
+/* ------ Profil actif (ruban doré Mini-Stats) ------ */
 function ActiveProfileBlock({
   active,
   selfStatus,
@@ -225,10 +221,10 @@ function ActiveProfileBlock({
           </span>
         </div>
 
-        {/* MiniStats (boutons dorés) */}
+        {/* Ruban doré Mini-Stats */}
         {active?.id && (
           <div style={{ marginTop: 8, width: "100%" }}>
-            <MiniStats profileId={active.id} />
+            <GoldMiniStats profileId={active.id} />
           </div>
         )}
 
@@ -348,8 +344,7 @@ function UnifiedAuthBlock({
       </div>
     </div>
   );
-} // ← assure-toi que cette accolade ferme bien la fonction
-
+}
 
 /* ------ Amis fusionnés dans un seul panneau repliable ------ */
 function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
@@ -543,9 +538,9 @@ function LocalProfiles({
                       </a>
                     </div>
 
-                    {/* mini-stats sur une seule ligne */}
+                    {/* ruban doré */}
                     <div style={{ marginTop: 6 }}>
-                      <MiniStats profileId={p.id} />
+                      <GoldMiniStats profileId={p.id} />
                     </div>
                   </>
                 )}
@@ -657,6 +652,76 @@ function EditInline({
           QUITTER
         </button>
       )}
+    </div>
+  );
+}
+
+/* ------ Ruban doré Mini-Stats (Moy/3, Best, CO, Win%) ------ */
+function GoldMiniStats({ profileId }: { profileId: string }) {
+  const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await getBasicProfileStats(profileId);
+        if (!cancelled) setStats(s);
+      } catch {
+        if (!cancelled) setStats(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [profileId]);
+
+  const avg3 = stats?.avg3 ?? 0;
+  const best = stats?.bestVisit ?? 0;
+  const co = (stats as any)?.co ?? (stats as any)?.coCount ?? (stats as any)?.checkouts ?? 0;
+  const winPct =
+    stats && (stats as any).legsPlayed > 0
+      ? Math.round(((stats as any).legsWon / (stats as any).legsPlayed) * 100)
+      : null;
+
+  return (
+    <div
+      style={{
+        borderRadius: 10,
+        padding: "8px 10px",
+        background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
+        border: "1px solid rgba(240,177,42,.25)",
+        boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 14,
+          alignItems: "center",
+        }}
+      >
+        <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} />
+        <GoldStatItem label="Best" value={String(best)} />
+        <GoldStatItem label="CO" value={String(co)} />
+        <GoldStatItem label="Win%" value={winPct === null ? "—" : `${winPct}`} />
+      </div>
+    </div>
+  );
+}
+
+function GoldStatItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "grid", gap: 2 }}>
+      <span style={{ fontSize: 12, color: "rgba(255,255,255,.66)" }}>{label}</span>
+      <span
+        style={{
+          fontWeight: 800,
+          letterSpacing: .2,
+          color: "#f0b12a",
+          textShadow: "0 0 8px rgba(240,177,42,.28)",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }

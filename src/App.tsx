@@ -227,45 +227,45 @@ export default function App() {
     update((s) => ({ ...s, profiles: fn(s.profiles ?? []) }));
   }
 
- // Fin de partie → normalise, pousse en mémoire + persistant, puis ouvre l’historique
-function pushHistory(m: MatchRecord) {
-  // Normalisation : on garantit id, timestamps, kind, status
-  const now = Date.now();
-  const id =
-    (m as any)?.id ||
-    (m as any)?.matchId ||
-    `x01-${now}-${Math.random().toString(36).slice(2, 8)}`;
+  // Fin de partie → normalise, pousse en mémoire + persistant, puis ouvre l’historique
+  function pushHistory(m: MatchRecord) {
+    // Normalisation : on garantit id, timestamps, kind, status
+    const now = Date.now();
+    const id =
+      (m as any)?.id ||
+      (m as any)?.matchId ||
+      `x01-${now}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const saved: any = {
-    id,
-    kind: (m as any)?.kind || "x01",
-    status: (m as any)?.status || "finished",
-    players:
-      (m as any)?.players ||
-      (m as any)?.payload?.players ||
-      [], // ok si vide : l’UI affiche "—"
-    winnerId:
-      (m as any)?.winnerId ||
-      (m as any)?.payload?.winnerId ||
-      null,
-    createdAt: (m as any)?.createdAt || now,
-    updatedAt: now,
-    payload: m, // on garde tout brut ici
-  };
+    const saved: any = {
+      id,
+      kind: (m as any)?.kind || "x01",
+      status: (m as any)?.status || "finished",
+      players:
+        (m as any)?.players ||
+        (m as any)?.payload?.players ||
+        [], // ok si vide : l’UI affiche "—"
+      winnerId:
+        (m as any)?.winnerId ||
+        (m as any)?.payload?.winnerId ||
+        null,
+      createdAt: (m as any)?.createdAt || now,
+      updatedAt: now,
+      payload: m, // on garde tout brut ici
+    };
 
-  // 1) mémoire (Store)
-  update((s) => ({ ...s, history: [...(s.history ?? []), saved] }));
+    // 1) mémoire (Store)
+    update((s) => ({ ...s, history: [...(s.history ?? []), saved] }));
 
-  // 2) persistant (lib/history) — best effort
-  try {
-    (History as any)?.upsert?.(saved);
-  } catch (e) {
-    console.warn("[App] History.upsert failed:", e);
+    // 2) persistant (lib/history) — best effort
+    try {
+      (History as any)?.upsert?.(saved);
+    } catch (e) {
+      console.warn("[App] History.upsert failed:", e);
+    }
+
+    // 3) route
+    go("stats", { tab: "history" });
   }
-
-  // 3) route
-  go("stats", { tab: "history" });
-}
 
   // --------------------------------------------
   // Routes
@@ -308,39 +308,60 @@ function pushHistory(m: MatchRecord) {
         page = (
           <StatsHub
             go={go}
-            memHistory={store.history ?? []}   // 👈 passe l’historique en mémoire comme fallback
-            {...(routeParams ?? {})}           // ex: { tab: "history" }
+            tab={(routeParams?.tab as any) ?? "history"}
+            memHistory={store.history ?? []}   // ← fallback mémoire
           />
         );
         break;
 
       case "statsDetail": {
-        const rec = (History as any)?.get?.(routeParams?.matchId);
-        page = rec ? (
-          <div style={{ padding: 16 }}>
-            <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
-              ← Retour
-            </button>
-            <h2 style={{ margin: 0 }}>
-              {(rec.kind || "").toUpperCase()} — {new Date(rec.updatedAt).toLocaleString()}
-            </h2>
-            <div style={{ opacity: 0.85, marginTop: 8 }}>
-              Joueurs : {(rec.players || []).map((p: any) => p.name).join(" · ")}
+        // robuste: récup + fallback, dates sûres, joueurs via payload
+        const getRec = (id?: string) => {
+          if (!id) return null as any;
+          const api: any = History || {};
+          try {
+            return api.get?.(id) ?? api.getX01?.(id) ?? null;
+          } catch {
+            return null;
+          }
+        };
+
+        const rec: any = getRec(routeParams?.matchId);
+
+        const toArr = (v: any) => (Array.isArray(v) ? v : []);
+        const N = (v: any, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+
+        if (rec) {
+          const when = N(rec.updatedAt ?? rec.createdAt ?? Date.now(), Date.now());
+          const dateStr = new Date(when).toLocaleString();
+          const players = toArr(rec.players?.length ? rec.players : rec.payload?.players);
+          const names = players.map((p: any) => p?.name ?? "—").join(" · ");
+          const winnerName = rec.winnerId
+            ? (players.find((p: any) => p?.id === rec.winnerId)?.name ?? "—")
+            : null;
+
+          page = (
+            <div style={{ padding: 16 }}>
+              <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
+                ← Retour
+              </button>
+              <h2 style={{ margin: 0 }}>
+                {(rec.kind || "MATCH").toUpperCase()} — {dateStr}
+              </h2>
+              <div style={{ opacity: 0.85, marginTop: 8 }}>Joueurs : {names || "—"}</div>
+              {winnerName && <div style={{ marginTop: 6 }}>Vainqueur : 🏆 {winnerName}</div>}
             </div>
-            {rec.winnerId && (
-              <div style={{ marginTop: 6 }}>
-                Vainqueur : 🏆 {(rec.players || []).find((p: any) => p.id === rec.winnerId)?.name ?? "—"}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ padding: 16 }}>
-            <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
-              ← Retour
-            </button>
-            Aucune donnée
-          </div>
-        );
+          );
+        } else {
+          page = (
+            <div style={{ padding: 16 }}>
+              <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
+                ← Retour
+              </button>
+              Aucune donnée
+            </div>
+          );
+        }
         break;
       }
 
@@ -397,7 +418,9 @@ function pushHistory(m: MatchRecord) {
             title="Lobby — Cricket"
             profiles={store.profiles ?? []}
             onStart={(ids) => {
-              const players = store.settings.randomOrder ? ids.slice().sort(() => Math.random() - 0.5) : ids;
+              const players = store.settings.randomOrder
+                ? ids.slice().sort(() => Math.random() - 0.5)
+                : ids;
               go("cricket");
             }}
           />

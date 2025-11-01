@@ -17,8 +17,8 @@ type SavedMatch = {
   status?: "in_progress" | "finished";
   players?: PlayerLite[];
   winnerId?: string | null;
-  createdAt?: number;
-  updatedAt?: number;
+  createdAt?: number | string;   // ← accepte string
+  updatedAt?: number | string;   // ← accepte string
   summary?: any;
   payload?: any;
 };
@@ -36,7 +36,7 @@ const n = (x: any, d = 0) => {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 };
-const fmtDate = (ts?: number) => new Date(n(ts, Date.now())).toLocaleString();
+const fmtDate = (ts?: number | string) => new Date(n(ts, Date.now())).toLocaleString();
 
 // History API (sécurisé)
 function useHistoryAPI(): SavedMatch[] {
@@ -82,9 +82,9 @@ export default function StatsHub(props: StatsHubProps) {
   const initialTab: "history" | "stats" = props.tab === "stats" ? "stats" : "history";
   const [tab, setTab] = React.useState<"history" | "stats">(initialTab);
 
-  const persisted = useHistoryAPI();          // 1) History API
+  const persisted = useHistoryAPI();               // 1) History API
   const mem = toArr<SavedMatch>(props.memHistory); // 2) mémoire depuis App
-  const fromStore = useStoreHistory();        // 3) Store/IndexedDB
+  const fromStore = useStoreHistory();             // 3) Store/IndexedDB
 
   // Fusion 1+2+3 (id unique, le plus récent gagne)
   const records = React.useMemo(() => {
@@ -156,7 +156,8 @@ function HistoryList({
   return (
     <div style={{ display: "grid", gap: 10 }}>
       {records.map((rec) => {
-        const players = toArr<PlayerLite>(rec.players);
+        // ← NEW : fallback sur payload.players si players vide/absent
+        const players = toArr<PlayerLite>(rec.players?.length ? rec.players : rec.payload?.players);
         const status = rec.status ?? "finished";
         const winnerId = rec.winnerId ?? null;
         const first = players[0]?.name || "—";
