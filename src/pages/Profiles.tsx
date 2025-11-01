@@ -657,7 +657,7 @@ function EditInline({
   );
 }
 
-/* ------ Ruban doré Mini-Stats (1 ligne, valeurs dorées réduites) ------ */
+/* ------ Ruban doré Mini-Stats (1 ligne, mobile-safe) ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
   const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
 
@@ -671,9 +671,7 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
         if (!cancelled) setStats(null);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [profileId]);
 
   const avg3 = stats?.avg3 ?? 0;
@@ -685,78 +683,58 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
     0;
   const winPct =
     stats && (stats as any).legsPlayed > 0
-      ? Math.round(
-          ((stats as any).legsWon / (stats as any).legsPlayed) * 100
-        )
+      ? Math.round(((stats as any).legsWon / (stats as any).legsPlayed) * 100)
       : null;
 
-  const pillW = "clamp(68px, 19vw, 84px)"; // largeur fixe pour tenir sur une ligne
+  // ⬇️ plus petit pour téléphones étroits (≥320px)
+  // 4 * 58 + 3 * 4 + paddings ≈ 254px → tient partout
+  const pillW = "clamp(58px, 17vw, 78px)";
 
   return (
     <div
       style={{
         borderRadius: 10,
-        padding: "6px 8px",
-        background:
-          "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
+        padding: "5px 6px",
+        boxSizing: "border-box",
+        background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
         border: "1px solid rgba(240,177,42,.25)",
-        boxShadow:
-          "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
+        boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
+        width: "100%",
+        maxWidth: "100%",
+        overflow: "hidden",
       }}
     >
       <div
         style={{
           display: "flex",
-          flexWrap: "nowrap",
+          flexWrap: "nowrap",   // jamais de retour
           alignItems: "stretch",
-          overflow: "hidden",
+          gap: 0,               // l’espace est géré par GoldSep
+          width: "100%",
         }}
       >
-        <GoldStatItem
-          label="Moy/3"
-          value={(Math.round(avg3 * 10) / 10).toFixed(1)}
-          width={pillW}
-        />
+        <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="Best" value={String(best)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="CO" value={String(co)} width={pillW} />
         <GoldSep />
-        <GoldStatItem
-          label="Win%"
-          value={winPct === null ? "—" : `${winPct}`}
-          width={pillW}
-        />
+        <GoldStatItem label="Win%" value={winPct === null ? "—" : `${winPct}`} width={pillW} />
       </div>
     </div>
   );
 }
 
-/* ---- séparateur vertical doré ---- */
+/* fin séparateur très fin (mobile) */
 function GoldSep() {
   return (
-    <div
-      aria-hidden
-      style={{
-        width: 6,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        style={{
-          width: 1,
-          height: "65%",
-          background: "rgba(240,177,42,.18)",
-          borderRadius: 1,
-        }}
-      />
+    <div aria-hidden style={{ width: 4, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: 1, height: "64%", background: "rgba(240,177,42,.18)", borderRadius: 1 }} />
     </div>
   );
 }
 
-/* ---- pastille individuelle ---- */
+/* pastille compacte, chiffres plus petits */
 function GoldStatItem({
   label,
   value,
@@ -778,10 +756,9 @@ function GoldStatItem({
         fontVariantNumeric: "tabular-nums",
       }}
     >
-      {/* label (blanc/gris) */}
       <span
         style={{
-          fontSize: "clamp(8.5px, 1.9vw, 10px)",
+          fontSize: "clamp(8px, 1.6vw, 9.5px)",   // label plus petit
           color: "rgba(255,255,255,.66)",
           lineHeight: 1.05,
           whiteSpace: "nowrap",
@@ -789,15 +766,13 @@ function GoldStatItem({
       >
         {label}
       </span>
-
-      {/* valeur dorée (plus petite qu'avant) */}
       <span
         style={{
           fontWeight: 800,
-          letterSpacing: 0.2,
+          letterSpacing: 0.1,
           color: "#f0b12a",
-          textShadow: "0 0 5px rgba(240,177,42,.18)",
-          fontSize: "clamp(10px, 2.8vw, 13px)", // 🔹 réduit : avant 11.5–15px
+          textShadow: "0 0 4px rgba(240,177,42,.16)",
+          fontSize: "clamp(9.5px, 2.4vw, 12px)",  // 🔻 valeurs dorées réduites (mobile OK)
           lineHeight: 1.05,
           whiteSpace: "nowrap",
         }}
