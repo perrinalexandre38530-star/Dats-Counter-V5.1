@@ -5,7 +5,6 @@
 // - Amis: un seul panneau repliable "Amis (N)" trié par statut
 // - Profils locaux: compteur, mini-stats ruban doré, Éditer au-dessus de Suppr.
 // - [RESPONSIVE] Mini-stats incassables : auto-fit/minmax + clamp()
-// - [MAINTENANCE] Bouton Réinitialiser l’app (IndexedDB+LS+Caches+SW)
 // ============================================
 
 import React from "react";
@@ -140,23 +139,6 @@ export default function Profiles({
             statsMap={statsMap}
             warmup={(id) => warmProfileStats(id, setStatsMap)}
           />
-        </div>
-      </Card>
-
-      {/* ===== Maintenance ===== */}
-      <Card title="Maintenance">
-        <div className="row-between" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <div className="subtitle" style={{ opacity: .8 }}>
-            Réinitialiser toutes les données locales (profils, stats, historique, cache).
-          </div>
-          <button
-            className="btn danger"
-            onClick={hardResetApp}
-            title="Effacer toutes les données et redémarrer"
-            style={{ fontWeight: 800 }}
-          >
-            RÉINITIALISER L’APP
-          </button>
         </div>
       </Card>
     </div>
@@ -705,6 +687,7 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
       : null;
 
   // ⬇️ plus petit pour téléphones étroits (≥320px)
+  // 4 * 58 + 3 * 4 + paddings ≈ 254px → tient partout
   const pillW = "clamp(58px, 17vw, 78px)";
 
   return (
@@ -789,7 +772,7 @@ function GoldStatItem({
           letterSpacing: 0.1,
           color: "#f0b12a",
           textShadow: "0 0 4px rgba(240,177,42,.16)",
-          fontSize: "clamp(9.5px, 2.4vw, 12px)",  // valeurs dorées réduites
+          fontSize: "clamp(9.5px, 2.4vw, 12px)",  // 🔻 valeurs dorées réduites (mobile OK)
           lineHeight: 1.05,
           whiteSpace: "nowrap",
         }}
@@ -826,69 +809,5 @@ async function warmProfileStats(
   try {
     const s = await getBasicProfileStats(id);
     setStatsMap((m) => (m[id] ? m : { ...m, [id]: s }));
-  } catch {}
-}
-
-/* ===== Hard Reset (PWA/Android/Browser) ===== */
-async function hardResetApp() {
-  const ok = confirm(
-    "Réinitialiser complètement l’application ?\n\n" +
-      "• Efface IndexedDB, localStorage, sessionStorage\n" +
-      "• Vide le cache (Service Worker)\n" +
-      "• Redémarre l’app"
-  );
-  if (!ok) return;
-  try {
-    await Promise.allSettled([
-      clearIndexedDB("darts-counter-v5"), // DB_NAME utilisé par storage.ts
-      clearLocalStorage(),
-      clearSessionStorage(),
-      clearCaches(),
-      unregisterServiceWorkers(),
-    ]);
-  } finally {
-    location.reload();
-  }
-}
-
-function clearIndexedDB(dbName: string) {
-  return new Promise<void>((resolve) => {
-    try {
-      const req = indexedDB.deleteDatabase(dbName);
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-      req.onblocked = () => resolve();
-    } catch { resolve(); }
-  });
-}
-
-function clearLocalStorage() {
-  try {
-    localStorage.removeItem("darts-counter-store-v3"); // ancien LS
-    localStorage.removeItem("store"); // éventuelle clé brute
-  } catch {}
-  return Promise.resolve();
-}
-
-function clearSessionStorage() {
-  try { sessionStorage.clear(); } catch {}
-  return Promise.resolve();
-}
-
-async function clearCaches() {
-  try {
-    if ("caches" in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    }
-  } catch {}
-}
-
-async function unregisterServiceWorkers() {
-  try {
-    if ("serviceWorker" in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister()));
-    }
   } catch {}
 }

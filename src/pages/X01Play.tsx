@@ -3,7 +3,7 @@
 // Header sticky, Keypad fixed, Checkout centré sous la volée
 // Sons (dart/bust), vibration, TTS (volée & fin de partie)
 // Avatar agrandi, NOM centré au-dessus du score
-// Mini-Stats + mini-Classement compacts
+// Mini-Stats sous l’avatar + mini-Classement sous la volée  ⟵ (MAJ)
 // Bouton QUITTER doré
 // + Reprise/sauvegarde Historique (History.upsert + resumeId)
 // + CONTINUER jusqu’à l’avant-dernier + Overlay Classement/Stats de manche
@@ -61,7 +61,6 @@ type LegacyLegResultLite = {
 function isNewLegStats(x: any): x is import("../lib/stats").LegStats {
   return !!x && typeof x === "object" && Array.isArray(x.players) && !!x.perPlayer;
 }
-
 function pickWinnerId(res: LegacyLegResultLite | import("../lib/stats").LegStats) {
   return isNewLegStats(res) ? (res.winnerId ?? null) : (res.winnerId ?? null);
 }
@@ -69,10 +68,7 @@ function pickLegNo(res: LegacyLegResultLite | import("../lib/stats").LegStats) {
   return isNewLegStats(res) ? res.legNo : res.legNo;
 }
 
-/** Commite immédiatement la manche finie :
- *  - push dans stats unifiées (mergeLegToBasics)
- *  - upsert Historique en status:"finished"
- */
+/** Commit immédiat d’une manche finie (stats unifiées + historique) */
 async function commitFinishedLeg(opts: {
   result: LegacyLegResultLite | import("../lib/stats").LegStats;
   resumeId?: string | null;
@@ -80,14 +76,12 @@ async function commitFinishedLeg(opts: {
 }) {
   const { result, resumeId, kind = "x01" } = opts;
 
-  // 1) Stats unifiées
   try {
     await mergeLegToBasics(result);
   } catch (e) {
     console.warn("[statsBridge] mergeLegToBasics failed:", e);
   }
 
-  // 2) Historique (finished)
   try {
     const id = resumeId || (crypto.randomUUID?.() ?? String(Date.now()));
     const winnerId = pickWinnerId(result);
@@ -484,7 +478,6 @@ export default function X01Play({
         console.warn("computeLegStats() error:", e);
       }
 
-      // >>> Commit (Historique + stats unifiées)
       try {
         await commitFinishedLeg({
           result: enriched as any,
@@ -495,7 +488,6 @@ export default function X01Play({
         console.warn("commitFinishedLeg failed:", e);
       }
 
-      // reset logger pour manche suivante
       visitNoRef.current = 0;
       setVisitsLog([]);
     },
@@ -507,7 +499,7 @@ export default function X01Play({
     resumeId ?? (crypto.randomUUID?.() ?? String(Date.now()))
   );
 
-  // ===== Commit auto des stats globales à chaque fin de manche (pour tes agrégations locales)
+  // ===== Commit auto stats globales
   React.useEffect(() => {
     if (!lastLegResult) return;
     const res = lastLegResult;
@@ -647,10 +639,7 @@ export default function X01Play({
     const d: UIDart = { v: n, mult: n === 0 ? 1 : multiplier };
     const next = [...currentThrow, d];
     playDartSfx(d, next);
-    try {
-      dartHit.currentTime = 0;
-      dartHit.play();
-    } catch {}
+    try { dartHit.currentTime = 0; dartHit.play(); } catch {}
     (navigator as any).vibrate?.(25);
     setCurrentThrow(next);
     setMultiplier(1);
@@ -660,10 +649,7 @@ export default function X01Play({
     const d: UIDart = { v: 25, mult: multiplier === 2 ? 2 : 1 };
     const next = [...currentThrow, d];
     playDartSfx(d, next);
-    try {
-      dartHit.currentTime = 0;
-      dartHit.play();
-    } catch {}
+    try { dartHit.currentTime = 0; dartHit.play(); } catch {}
     (navigator as any).vibrate?.(25);
     setCurrentThrow(next);
     setMultiplier(1);
@@ -679,7 +665,7 @@ export default function X01Play({
     if (!willBust && doubleOut && after === 0) willBust = !isDoubleFinish(currentThrow);
     const ptsForStats = willBust ? 0 : volleyPts;
 
-    // ---- Logger la volée (pour computeLegStats)
+    // Logger la volée
     {
       const isCheckout = !willBust && after === 0;
       pushVisitLog({
@@ -722,10 +708,7 @@ export default function X01Play({
       for (const d of currentThrow) {
         if (d.v === 0) b.miss++;
         else if (d.v === 25) {
-          if (d.mult === 2) {
-            b.inner++;
-            b.double++;
-          } else b.outer++;
+          if (d.mult === 2) { b.inner++; b.double++; } else b.outer++;
         } else if (d.mult === 2) b.double++;
         else if (d.mult === 3) b.triple++;
         else b.outer++;
@@ -740,10 +723,7 @@ export default function X01Play({
     setLastBustByPlayer((m) => ({ ...m, [currentPlayer.id]: !!willBust }));
 
     if (willBust) {
-      try {
-        bustSnd.currentTime = 0;
-        bustSnd.play();
-      } catch {}
+      try { bustSnd.currentTime = 0; bustSnd.play(); } catch {}
       (navigator as any).vibrate?.([120, 60, 140]);
     } else if (voiceOn && "speechSynthesis" in window) {
       const name = currentPlayer.name || "";
@@ -774,8 +754,7 @@ export default function X01Play({
       score: scoresByPlayer[p.id] ?? start,
     }));
     items.sort((a, b) => {
-      const az = a.score === 0,
-        bz = b.score === 0;
+      const az = a.score === 0, bz = b.score === 0;
       if (az && !bz) return -1;
       if (!az && bz) return 1;
       return a.score - b.score;
@@ -785,46 +764,18 @@ export default function X01Play({
 
   function chipStyle(d?: UIDart, red = false): React.CSSProperties {
     if (!d)
-      return {
-        background: "rgba(255,255,255,.06)",
-        color: "#bbb",
-        border: "1px solid rgba(255,255,255,.08)",
-      };
+      return { background: "rgba(255,255,255,.06)", color: "#bbb", border: "1px solid rgba(255,255,255,.08)" };
     if (red)
-      return {
-        background: "rgba(200,30,30,.18)",
-        color: "#ff8a8a",
-        border: "1px solid rgba(255,80,80,.35)",
-      };
+      return { background: "rgba(200,30,30,.18)", color: "#ff8a8a", border: "1px solid rgba(255,80,80,.35)" };
     if (d.v === 25 && d.mult === 2)
-      return {
-        background: "rgba(13,160,98,.18)",
-        color: "#8ee6bf",
-        border: "1px solid rgba(13,160,98,.35)",
-      };
+      return { background: "rgba(13,160,98,.18)", color: "#8ee6bf", border: "1px solid rgba(13,160,98,.35)" };
     if (d.v === 25)
-      return {
-        background: "rgba(13,160,98,.12)",
-        color: "#7bd6b0",
-        border: "1px solid rgba(13,160,98,.3)",
-      };
+      return { background: "rgba(13,160,98,.12)", color: "#7bd6b0", border: "1px solid rgba(13,160,98,.3)" };
     if (d.mult === 3)
-      return {
-        background: "rgba(179,68,151,.18)",
-        color: "#ffd0ff",
-        border: "1px solid rgba(179,68,151,.35)",
-      };
+      return { background: "rgba(179,68,151,.18)", color: "#ffd0ff", border: "1px solid rgba(179,68,151,.35)" };
     if (d.mult === 2)
-      return {
-        background: "rgba(46,150,193,.18)",
-        color: "#cfeaff",
-        border: "1px solid rgba(46,150,193,.35)",
-      };
-    return {
-      background: "rgba(255,187,51,.12)",
-      color: "#ffc63a",
-      border: "1px solid rgba(255,187,51,.4)",
-    };
+      return { background: "rgba(46,150,193,.18)", color: "#cfeaff", border: "1px solid rgba(46,150,193,.35)" };
+    return { background: "rgba(255,187,51,.12)", color: "#ffc63a", border: "1px solid rgba(255,187,51,.4)" };
   }
 
   const goldBtn: React.CSSProperties = {
@@ -838,7 +789,7 @@ export default function X01Play({
     cursor: "pointer",
   };
 
-  // utilitaires flush (déclaré AVANT tout usage)
+  // utilitaires flush
   const flushPendingFinish = React.useCallback(() => {
     if (pendingFinish) {
       const m: MatchRecord = pendingFinish;
@@ -854,10 +805,8 @@ export default function X01Play({
     History.upsert(rec);
     historyIdRef.current = rec.id;
     onFinish(rec);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFinish, onFinish, winner?.id]);
 
-  // (le early return arrive APRES la définition de flushPendingFinish -> pas de TDZ)
   if (!state.players?.length) {
     return (
       <div className="container" style={{ padding: 16 }}>
@@ -912,7 +861,6 @@ export default function X01Play({
       }
     }
 
-    // TTS classement final
     if (!justFinished || !voiceOn || !("speechSynthesis" in window)) return;
     const ords = ["", "Deuxième", "Troisième", "Quatrième", "Cinquième", "Sixième", "Septième", "Huitième"];
     const ordered = [...liveRanking].sort((a, b) => {
@@ -933,25 +881,17 @@ export default function X01Play({
 
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
 
-  // Musique de fond à l’overlay / fin
+  // Musique fond overlay / fin
   const [bgMusic] = React.useState(() => new Audio("/sounds/victory.mp3"));
   React.useEffect(() => {
     if (overlayOpen || showEndBanner) {
-      try {
-        bgMusic.loop = true;
-        bgMusic.volume = 0.6;
-        bgMusic.currentTime = 0;
-        bgMusic.play().catch(() => {});
-      } catch {}
+      try { bgMusic.loop = true; bgMusic.volume = 0.6; bgMusic.currentTime = 0; bgMusic.play().catch(() => {}); } catch {}
     } else {
-      try {
-        bgMusic.pause();
-        bgMusic.currentTime = 0;
-      } catch {}
+      try { bgMusic.pause(); bgMusic.currentTime = 0; } catch {}
     }
   }, [overlayOpen, showEndBanner, bgMusic]);
 
-  // Force overlay si fin match 2 joueurs (fallback legacy)
+  // Force overlay si fin match
   React.useEffect(() => {
     if (!isOver) return;
     if (!overlayOpen) setOverlayOpen(true);
@@ -1010,7 +950,6 @@ export default function X01Play({
         h180,
       } as LegResult);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOver]);
 
   return (
@@ -1036,6 +975,8 @@ export default function X01Play({
         scoresByPlayer={scoresByPlayer}
         statePlayers={(state.players || []) as EnginePlayer[]}
         liveRanking={liveRanking}
+        curDarts={curDarts}
+        curM3D={curM3D}
       />
 
       {/* Bloc joueurs (accordéon) */}
@@ -1080,7 +1021,7 @@ export default function X01Play({
       {/* Overlay fin de manche */}
       <EndOfLegOverlay
         open={overlayOpen}
-        result={lastLegResult as any} // enrichi potentiellement avec __legStats
+        result={lastLegResult as any}
         playersById={React.useMemo(
           () =>
             Object.fromEntries(
@@ -1132,6 +1073,7 @@ export default function X01Play({
 
   /* ===== sous-composants internes ===== */
 
+  /** HEADER : Avatar + (en dessous) Mini-Stats | Centre : nom+score+volée+checkout + (en dessous) Mini-Classement */
   function HeaderBlock(props: {
     currentPlayer?: EnginePlayer | null;
     currentAvatar: string | null;
@@ -1144,15 +1086,13 @@ export default function X01Play({
     scoresByPlayer: Record<string, number>;
     statePlayers: EnginePlayer[];
     liveRanking: RankItem[];
+    curDarts: number;
+    curM3D: string;
   }) {
-    const { currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut } = props;
+    const { currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking, curDarts, curM3D } = props;
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
     const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
-
-    const curDarts = currentPlayer ? dartsCount[currentPlayer.id] || 0 : 0;
-    const curPts = currentPlayer ? pointsSum[currentPlayer.id] || 0 : 0;
-    const curM3D = curDarts > 0 ? ((curPts / curDarts) * 3).toFixed(2) : "0.00";
 
     return (
       <div
@@ -1169,40 +1109,54 @@ export default function X01Play({
           marginBottom: 12,
         }}
       >
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 12, alignItems: "center" }}>
-          {/* Avatar agrandi */}
-          <div
-            style={{
-              width: 120,
-              height: 120,
-              borderRadius: "50%",
-              overflow: "hidden",
-              background: "linear-gradient(180deg, #1b1b1f, #111114)",
-              border: "1px solid rgba(255,255,255,.08)",
-            }}
-          >
-            {currentAvatar ? (
-              <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            ) : (
-              <div
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#999",
-                  fontWeight: 700,
-                }}
-              >
-                ?
+        {/* Deux colonnes : Avatar(+stats) | Centre (score/volée/checkout + classement) */}
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
+          {/* Colonne gauche : Avatar + Mini-Stats en dessous */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+            <div
+              style={{
+                width: 120,
+                height: 120,
+                borderRadius: "50%",
+                overflow: "hidden",
+                background: "linear-gradient(180deg, #1b1b1f, #111114)",
+                border: "1px solid rgba(255,255,255,.08)",
+              }}
+            >
+              {currentAvatar ? (
+                <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#999",
+                    fontWeight: 700,
+                  }}
+                >
+                  ?
+                </div>
+              )}
+            </div>
+
+            {/* Mini-Stats sous avatar */}
+            <div style={{ ...miniCard, width: 190, height: "auto", padding: 10 }}>
+              <div style={miniTitle}>Stats</div>
+              <div style={miniText}>
+                <div>Score restant : <b>{currentRemaining}</b></div>
+                <div>Darts jouées : <b>{curDarts}</b></div>
+                <div>Moy/3D : <b>{curM3D}</b></div>
+                <div>Volée en cours : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
               </div>
-            )}
+            </div>
           </div>
 
-          {/* Centre : nom + score + volée + checkout */}
-          <div style={{ textAlign: "center", minWidth: 0 }}>
-            <div style={{ fontWeight: 900, fontSize: 24, color: "#ffcf57", letterSpacing: 0.4, marginBottom: 6 }}>
+          {/* Colonne centre : nom + score + volée + checkout + (en dessous) classement */}
+          <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontWeight: 900, fontSize: 24, color: "#ffcf57", letterSpacing: 0.4 }}>
               {currentPlayer?.name ?? "—"}
             </div>
 
@@ -1220,7 +1174,7 @@ export default function X01Play({
             </div>
 
             {/* Pastilles volée */}
-            <div style={{ marginTop: 8, display: "flex", gap: 8, justifyContent: "center" }}>
+            <div style={{ marginTop: 4, display: "flex", gap: 8, justifyContent: "center" }}>
               {[0, 1, 2].map((i: number) => {
                 const d = currentThrow[i];
                 const afterNow = currentRemaining - currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
@@ -1254,19 +1208,19 @@ export default function X01Play({
               const only = suggestCheckout(predictedAfter, doubleOut, dartsLeft)[0];
               if (!only || currentThrow.length >= 3) return null;
               return (
-                <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+                <div style={{ marginTop: 6, display: "flex", justifyContent: "center" }}>
                   <div
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      padding: 10,
+                      padding: 8,
                       borderRadius: 14,
                       border: "1px solid rgba(255,255,255,.08)",
                       background:
                         "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
                       boxShadow: "0 12px 28px rgba(0,0,0,.4)",
-                      minWidth: 220,
+                      minWidth: 200,
                       maxWidth: 580,
                     }}
                   >
@@ -1288,24 +1242,12 @@ export default function X01Play({
                 </div>
               );
             })()}
-          </div>
 
-          {/* Droite : mini stats & classement */}
-          <div style={{ justifySelf: "end", alignSelf: "center", display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={miniCard}>
-              <div style={miniTitle}>Stats</div>
-              <div style={miniText}>
-                <div>Score restant : <b>{currentRemaining}</b></div>
-                <div>Darts jouées : <b>{curDarts}</b></div>
-                <div>Moy/3D : <b>{curM3D}</b></div>
-                <div>Volée en cours : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
-              </div>
-            </div>
-
-            <div style={{ ...miniCard, display: "flex", flexDirection: "column" }}>
+            {/* Mini-Classement sous la volée */}
+            <div style={{ ...miniCard, alignSelf: "center", width: "min(320px, 100%)", height: "auto", padding: 8 }}>
               <div style={miniTitle}>Classement</div>
-              <div style={{ overflow: "hidden", flex: 1 }}>
-                {props.liveRanking.map((r, i) => (
+              <div>
+                {liveRanking.map((r, i) => (
                   <div key={r.id} style={miniRankRow}>
                     <div style={miniRankName}>{i + 1}. {r.name}</div>
                     <div style={r.score === 0 ? miniRankScoreFini : miniRankScore}>
