@@ -1,29 +1,20 @@
 // ============================================
 // src/pages/Home.tsx
 // Accueil + Carte profil (stats unifiées)
-// - Chargement tolérant (store partiel)
-// - Raccourcis jeux
-// - Mini cache local des BasicProfileStats (statsBridge)
+// - Médaillon avatar centré & zoom anti-bords (cover + scale)
+// - Layout mobile sans scroll + variante ultra-compacte
+// - Grille 2 colonnes sur tablette
 // ============================================
 
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import type { Store, Profile } from "../lib/types";
-
-// ★ NEW: stats basiques unifiées (Historique → agrégées)
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
 
-/* ---------- Tabs ---------- */
 type Tab =
   | "home" | "games" | "profiles" | "friends" | "all" | "stats" | "settings"
   | "x01setup" | "x01" | "cricket" | "killer" | "shanghai" | "lobby";
 
-/* =========================================
-   Home
-   - Tolérant au chargement async (profiles peut être undefined)
-   - Boutons rapides
-   - ★ Alimente la carte profil avec les stats unifiées
-   ========================================= */
 export default function Home({
   store,
   go,
@@ -35,68 +26,108 @@ export default function Home({
   showConnect?: boolean;
   onConnect?: () => void;
 }) {
-  // ✅ garde contre store/profiles/activeProfileId manquants au 1er rendu
   const profiles = store?.profiles ?? [];
   const activeProfileId = store?.activeProfileId ?? null;
   const active = profiles.find((p) => p.id === activeProfileId) ?? null;
 
-  // ★ NEW: charge les stats basiques du profil actif (lazy + cache local)
   const basicStats = useBasicStats(active?.id || null);
 
   return (
     <div
-      className="container"
+      className="home-page container"
       style={{
+        minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
+        justifyContent: "space-between",
         alignItems: "center",
-        minHeight: "calc(100vh - 90px)",
-        gap: 28,
+        paddingTop: 10,
+        paddingBottom: 0,
+        gap: 12,
         textAlign: "center",
+        overflow: "hidden",
       }}
     >
+      {/* ---- Styles responsives & variables ---- */}
+      <style>{`
+        .home-page {
+          --title-min: 28px;
+          --title-ideal: 8vw;
+          --title-max: 44px;
+          --card-pad: 16px;
+          --menu-gap: 10px;
+          --avatar-size: 92px;
+          --avatar-scale: 1.06; /* léger zoom pour manger les bords transparents */
+          --avatar-dx: 0px;     /* micro-réglage optionnel horizontal */
+          --avatar-dy: 0px;     /* micro-réglage optionnel vertical */
+          --bottomnav-h: 70px;
+          --menu-title: 16px;
+          --menu-sub: 12.5px;
+        }
+        /* Ultra-compact: petits téléphones / faible hauteur */
+        @media (max-height: 680px), (max-width: 360px) {
+          .home-page {
+            --title-min: 24px;
+            --title-ideal: 7vw;
+            --title-max: 36px;
+            --card-pad: 12px;
+            --menu-gap: 8px;
+            --avatar-size: 80px;
+            --menu-title: 15px;
+            --menu-sub: 11.5px;
+            --bottomnav-h: 64px;
+          }
+        }
+        /* Tablette: élargir et basculer les cartes en 2 colonnes */
+        @media (min-width: 640px) {
+          .home-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--menu-gap); }
+        }
+      `}</style>
+
       {/* ===== HERO ===== */}
       <div
         className="card"
         style={{
-          padding: 32,
+          padding: "var(--card-pad)",
           maxWidth: 520,
           width: "100%",
           textAlign: "center",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          boxShadow: "0 25px 45px rgba(0,0,0,.45)",
+          boxShadow: "0 18px 36px rgba(0,0,0,.40)",
+          gap: 8,
         }}
       >
-        <div className="title-accent" style={{ marginBottom: 12 }}>
-          Bienvenue,
+        <div className="title-accent" style={{ marginBottom: 0 }}>
+          Bienvenue
         </div>
 
         <h1
           className="title-xl"
           style={{
-            fontSize: 50,
+            fontSize: "clamp(var(--title-min), var(--title-ideal), var(--title-max))",
             lineHeight: 1.05,
-            marginBottom: 18,
+            margin: "4px 0 6px",
             color: "var(--gold-2)",
             textShadow: "0 6px 18px rgba(240,177,42,.35)",
-            whiteSpace: "nowrap",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+            paddingInline: 8,
+            maxWidth: "100%",
           }}
         >
           DARTS COUNTER
         </h1>
 
-        {/* --- soit le bouton Connexion, soit la carte dorée du profil actif --- */}
         {!active && showConnect ? (
           <button
             className="btn primary"
             style={{
               fontSize: 15,
-              padding: "12px 28px",
-              borderRadius: 16,
-              boxShadow: "0 0 24px rgba(240,177,42,.25)",
+              padding: "10px 22px",
+              borderRadius: 14,
+              boxShadow: "0 0 18px rgba(240,177,42,.22)",
             }}
             onClick={onConnect ?? (() => go("profiles"))}
           >
@@ -107,7 +138,6 @@ export default function Home({
             profile={active}
             status={(store?.selfStatus as any) ?? "online"}
             onNameClick={() => go("stats")}
-            // ★ injecte les stats unifiées (fallback automatique à l’interne)
             basicStats={basicStats}
           />
         ) : null}
@@ -115,38 +145,44 @@ export default function Home({
 
       {/* ===== ACCÈS RAPIDES ===== */}
       <div
-        className="list"
+        className="list home-grid"
         style={{
           width: "100%",
           maxWidth: 520,
-          gap: 16,
+          gap: "var(--menu-gap)",
+          display: "flex",          // remplacé par grid >=640px via .home-grid
+          flexDirection: "column",
+          paddingInline: 12,
         }}
       >
         <HomeCard
           title="PROFILS"
           subtitle="Création et gestion de profils"
-          icon={<Icon name="profiles" size={26} />}
+          icon={<Icon name="profiles" size={24} />}
           onClick={() => go("profiles")}
         />
         <HomeCard
           title="JEU LOCAL"
           subtitle="Accède à tous les modes de jeu"
-          icon={<Icon name="target" size={26} />}
+          icon={<Icon name="target" size={24} />}
           onClick={() => go("games")}
         />
         <HomeCard
           title="JEU ONLINE"
           subtitle="Parties à distance (mode à venir)"
-          icon={<Icon name="online" size={26} />}
+          icon={<Icon name="online" size={24} />}
           disabled
         />
         <HomeCard
           title="STATS"
           subtitle="Statistiques et historiques"
-          icon={<Icon name="stats" size={26} />}
+          icon={<Icon name="stats" size={24} />}
           onClick={() => go("stats")}
         />
       </div>
+
+      {/* Spacer bas = hauteur BottomNav */}
+      <div style={{ height: "var(--bottomnav-h)" }} />
     </div>
   );
 }
@@ -158,7 +194,7 @@ function useBasicStats(pid: string | null) {
     let cancelled = false;
     (async () => {
       if (!pid) return;
-      if (cache[pid]) return; // déjà en cache
+      if (cache[pid]) return;
       try {
         const s = await getBasicProfileStats(pid);
         if (!cancelled) setCache((m) => ({ ...m, [pid]: s }));
@@ -182,10 +218,8 @@ function ActiveProfileCard({
   profile: Profile;
   status: "online" | "away" | "offline";
   onNameClick: () => void;
-  // ★ NEW
   basicStats?: BasicProfileStats;
 }) {
-  // Fallback: si pas encore chargées, on garde d’anciens champs éventuels
   const legacy = (profile as any).stats || {};
   const s = {
     avg3: isNum(basicStats?.avg3) ? basicStats!.avg3 : (isNum(legacy.avg3) ? legacy.avg3 : 0),
@@ -217,32 +251,67 @@ function ActiveProfileCard({
         borderColor: "rgba(240,177,42,.45)",
         borderWidth: 1,
         borderStyle: "solid",
-        borderRadius: 20,
-        padding: 22,
+        borderRadius: 18,
+        padding: 16,
         textAlign: "center",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
         boxShadow: "0 8px 25px rgba(240,177,42,.15)",
+        gap: 6,
       }}
     >
-      {/* Avatar rond au centre */}
+      {/* Médaillon : image brute centrée + zoom anti-bords */}
       <div
         style={{
-          width: 100,
-          height: 100,
+          position: "relative",
+          width: "var(--avatar-size)",
+          height: "var(--avatar-size)",
           borderRadius: "50%",
-          overflow: "hidden",
-          marginBottom: 12,
+          marginBottom: 6,
           border: "2px solid rgba(240,177,42,.5)",
           boxShadow: "0 0 20px rgba(240,177,42,.25)",
+          overflow: "hidden",
+          background: "#000",
         }}
+        aria-label="avatar-medallion"
       >
-        <ProfileAvatar
-          size={100}
-          dataUrl={(profile as any).avatarDataUrl}
-          label={profile.name[0]?.toUpperCase()}
+        { (profile as any).avatarDataUrl ? (
+          <img
+            src={(profile as any).avatarDataUrl}
+            alt={profile.name}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              objectPosition: "50% 50%",
+              transform: `translate(var(--avatar-dx), var(--avatar-dy)) scale(var(--avatar-scale))`,
+              transformOrigin: "50% 50%",
+              display: "block",
+              background: "transparent",
+            }}
+            draggable={false}
+          />
+        ) : (
+          <ProfileAvatar
+            size={parseInt(getComputedStyle(document.documentElement)
+              .getPropertyValue("--avatar-size").replace("px","")) || 92}
+            dataUrl={undefined}
+            label={profile.name[0]?.toUpperCase()}
+          />
+        )}
+        {/* anneau décoratif interne */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: "50%",
+            boxShadow: "inset 0 0 0 3px rgba(240,177,42,.25)",
+            pointerEvents: "none",
+          }}
         />
       </div>
 
@@ -255,7 +324,7 @@ function ActiveProfileCard({
           margin: 0,
           color: "var(--gold-2)",
           fontWeight: 900,
-          fontSize: 22,
+          fontSize: 20,
           textShadow: "0 0 12px rgba(240,177,42,.35)",
         }}
         title="Voir mes statistiques"
@@ -267,8 +336,8 @@ function ActiveProfileCard({
       <div
         className="subtitle"
         style={{
-          marginTop: 4,
-          fontSize: 14,
+          marginTop: 0,
+          fontSize: 13,
           color: statusColor,
           fontWeight: 500,
         }}
@@ -281,9 +350,9 @@ function ActiveProfileCard({
         style={{
           display: "flex",
           justifyContent: "center",
-          gap: 16,
-          marginTop: 10,
-          fontSize: 13,
+          gap: 14,
+          marginTop: 6,
+          fontSize: 12,
           color: "rgba(255,255,255,.9)",
           flexWrap: "wrap",
         }}
@@ -297,56 +366,19 @@ function ActiveProfileCard({
   );
 }
 
-/* ---------- Mini-stat centrée ---------- */
 function StatMini({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ textAlign: "center" }}>
-      <div
-        className="subtitle"
-        style={{ fontSize: 11, opacity: 0.8, lineHeight: 1.2 }}
-      >
+      <div className="subtitle" style={{ fontSize: 10.5, opacity: 0.8, lineHeight: 1.1 }}>
         {label}
       </div>
-      <div
-        style={{
-          fontWeight: 800,
-          color: "var(--gold-2)",
-          textShadow: "0 0 8px rgba(240,177,42,.3)",
-        }}
-      >
+      <div style={{ fontWeight: 800, color: "var(--gold-2)", textShadow: "0 0 8px rgba(240,177,42,.3)" }}>
         {value}
       </div>
     </div>
   );
 }
 
-/* ---------- Mini stat en ligne (libre) ---------- */
-function Stat({ title, value }: { title: string; value: string }) {
-  return (
-    <div style={{ textAlign: "left" }}>
-      <div className="subtitle" style={{ fontSize: 11 }}>{title}</div>
-      <div style={{ fontWeight: 800 }}>{value}</div>
-    </div>
-  );
-}
-
-function Dot() {
-  return (
-    <span
-      style={{
-        width: 6,
-        height: 6,
-        borderRadius: 999,
-        background: "var(--gold)",
-        opacity: .6,
-        display: "inline-block",
-        alignSelf: "center",
-      }}
-    />
-  );
-}
-
-/* ---------- Cartes d’accès rapide ---------- */
 function HomeCard({
   title,
   subtitle,
@@ -367,29 +399,30 @@ function HomeCard({
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 10,
-        paddingTop: 20,
-        paddingBottom: 20,
-        background:
-          "linear-gradient(180deg, rgba(20,20,26,.55), rgba(14,14,18,.75))",
+        gap: 8,
+        paddingTop: 14,
+        paddingBottom: 14,
+        paddingInline: 10,
+        background: "linear-gradient(180deg, rgba(20,20,26,.55), rgba(14,14,18,.75))",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.75 : 1,
         textAlign: "center",
         transition: "all .2s ease",
+        borderRadius: 14,
       }}
       onClick={!disabled ? onClick : undefined}
       onMouseEnter={(e) =>
         (e.currentTarget.style.boxShadow =
-          "0 0 20px rgba(240,177,42,.18), 0 10px 25px rgba(0,0,0,.4)")}
+          "0 0 18px rgba(240,177,42,.18), 0 8px 18px rgba(0,0,0,.38)")}
       onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}
     >
       <div
         className="badge"
         aria-hidden
         style={{
-          width: 54,
-          height: 54,
-          borderRadius: 14,
+          width: 50,
+          height: 50,
+          borderRadius: 12,
           display: "grid",
           placeItems: "center",
           background: "rgba(255,255,255,.05)",
@@ -403,7 +436,7 @@ function HomeCard({
           color: "var(--gold-2)",
           fontWeight: 900,
           letterSpacing: 0.6,
-          fontSize: 18,
+          fontSize: "var(--menu-title)",
           textShadow: "0 0 12px rgba(240,177,42,.4)",
         }}
       >
@@ -413,10 +446,10 @@ function HomeCard({
       <div
         className="subtitle"
         style={{
-          marginTop: 2,
+          marginTop: 0,
           maxWidth: 420,
-          fontSize: 13.5,
-          lineHeight: 1.35,
+          fontSize: "var(--menu-sub)",
+          lineHeight: 1.3,
           color: "var(--muted)",
         }}
       >

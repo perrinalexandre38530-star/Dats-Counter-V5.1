@@ -19,6 +19,7 @@ import { useX01Engine } from "../hooks/useX01Engine";
 import Keypad from "../components/Keypad";
 import EndOfLegOverlay from "../components/EndOfLegOverlay";
 import { playSound } from "../lib/sound";
+import { pushFromLeg as pushMatchLog } from "../lib/matchStats";
 
 // Historique (⚠️ PAS d'import de makeX01RecordFromEngine ici)
 import { History, type SavedMatch } from "../lib/history";
