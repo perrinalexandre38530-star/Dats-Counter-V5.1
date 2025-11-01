@@ -1,15 +1,15 @@
 // ============================================
-// src/pages/StatsHub.tsx — Stats + Historique (safe + OPFS)
-// - Demande la persistance (si pas déjà accordée)
-// - Lit l'historique lourd dans OPFS et le fusionne avec History
-// - Corrige les .map sur undefined (helpers toArr / toObj / safeNumber)
+// src/pages/StatsHub.tsx — Stats + Historique (ultra safe)
+// Lit depuis 3 sources et fusionne :
+//  - History API (IndexedDB propre au module History)
+//  - memHistory (passé par App depuis store.history en RAM)
+//  - Store persistant (storage.ts) -> store.history
 // ============================================
-
 import React from "react";
 import { History } from "../lib/history";
-import { ensurePersisted, estimate, readJSON } from "../lib/deviceStore";
+import { loadStore } from "../lib/storage";
 
-// --- Types légers (compat) ---
+// --- Types légers ---
 type PlayerLite = { id: string; name?: string; avatarDataUrl?: string | null };
 type SavedMatch = {
   id: string;
@@ -25,26 +25,21 @@ type SavedMatch = {
 
 type StatsHubProps = {
   go?: (tab: string, params?: any) => void;
+  tab?: "history" | "stats";
+  memHistory?: SavedMatch[]; // ← App passe store.history ici
 };
 
-/* ---------- helpers sûrs ---------- */
-function toArr<T = any>(v: any): T[] {
-  return Array.isArray(v) ? (v as T[]) : [];
-}
-function toObj<T = any>(v: any): T {
-  return v && typeof v === "object" ? (v as T) : ({} as T);
-}
-function safeNumber(n: any, def = 0): number {
-  const x = Number(n);
-  return Number.isFinite(x) ? x : def;
-}
-function fmtDate(ts?: number) {
-  const d = new Date(safeNumber(ts, Date.now()));
-  return d.toLocaleString();
-}
+// --- helpers sûrs ---
+const toArr = <T,>(v: any): T[] => (Array.isArray(v) ? (v as T[]) : []);
+const toObj = <T,>(v: any): T => (v && typeof v === "object" ? (v as T) : ({} as T));
+const n = (x: any, d = 0) => {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+};
+const fmtDate = (ts?: number) => new Date(n(ts, Date.now())).toLocaleString();
 
-/* ---------- récupération safe History (IndexedDB/local) ---------- */
-function useHistorySafe() {
+// History API (sécurisé)
+function useHistoryAPI(): SavedMatch[] {
   const [rows, setRows] = React.useState<SavedMatch[]>([]);
   React.useEffect(() => {
     try {
@@ -61,87 +56,71 @@ function useHistorySafe() {
   return rows;
 }
 
-/* ---------- récupération OPFS (fichier gzip/json) ---------- */
-function useOpfsHistory(path = "history/x01/history.json") {
-  const [rows, setRows] = React.useState<SavedMatch[] | null>(null);
-
+// Store/IndexedDB (storage.ts)
+function useStoreHistory(): SavedMatch[] {
+  const [rows, setRows] = React.useState<SavedMatch[]>([]);
   React.useEffect(() => {
-    let cancelled = false;
+    let mounted = true;
     (async () => {
       try {
-        // Demander la persistance ici (OK si déjà accordée)
-        await ensurePersisted();
-        // (facultatif) log quota/usage en console
-        estimate().then((e) => console.log("Storage quota/usage:", e));
-
-        const fileData = await readJSON<SavedMatch[] | SavedMatch>(path);
-        const arr = toArr<SavedMatch>(fileData);
-        if (!cancelled) setRows(arr);
-      } catch (e) {
-        console.warn("[StatsHub] OPFS read error:", e);
-        if (!cancelled) setRows([]);
+        const store: any = await loadStore<any>();
+        if (!mounted) return;
+        setRows(toArr<SavedMatch>(store?.history));
+      } catch {
+        setRows([]);
       }
     })();
     return () => {
-      cancelled = true;
+      mounted = false;
     };
-  }, [path]);
-
+  }, []);
   return rows;
 }
 
 export default function StatsHub(props: StatsHubProps) {
   const go = props.go ?? (() => {});
-  const [tab, setTab] = React.useState<"history" | "stats">("history");
+  const initialTab: "history" | "stats" = props.tab === "stats" ? "stats" : "history";
+  const [tab, setTab] = React.useState<"history" | "stats">(initialTab);
 
-  const hx = useHistorySafe();               // History classique
-  const hxOpfs = useOpfsHistory();           // Historique lourd OPFS (peut être null le temps du chargement)
+  const persisted = useHistoryAPI();          // 1) History API
+  const mem = toArr<SavedMatch>(props.memHistory); // 2) mémoire depuis App
+  const fromStore = useStoreHistory();        // 3) Store/IndexedDB
 
-  // Fusion + dédup par id, priorité à OPFS (données plus “fraîches”/complètes)
-  const records = React.useMemo<SavedMatch[]>(() => {
-    const a = toArr<SavedMatch>(hx);
-    const b = toArr<SavedMatch>(hxOpfs ?? []);
+  // Fusion 1+2+3 (id unique, le plus récent gagne)
+  const records = React.useMemo(() => {
     const byId = new Map<string, SavedMatch>();
-    for (const r of a) if (r?.id) byId.set(r.id, toObj<SavedMatch>(r));
-    for (const r of b) if (r?.id) byId.set(r.id, toObj<SavedMatch>(r)); // écrase si même id
-    const merged = Array.from(byId.values());
-    merged.sort(
-      (x, y) =>
-        safeNumber(y.updatedAt ?? y.createdAt, 0) -
-        safeNumber(x.updatedAt ?? x.createdAt, 0)
+    const push = (r: any) => {
+      const rec = toObj<SavedMatch>(r);
+      if (!rec.id) return;
+      const prev = byId.get(rec.id);
+      const curDate = n(rec.updatedAt ?? rec.createdAt, 0);
+      const prevDate = n(prev?.updatedAt ?? prev?.createdAt, -1);
+      if (!prev || curDate > prevDate) byId.set(rec.id, rec);
+    };
+    persisted.forEach(push);
+    mem.forEach(push);
+    fromStore.forEach(push);
+    return Array.from(byId.values()).sort(
+      (a, b) => n(b.updatedAt ?? b.createdAt, 0) - n(a.updatedAt ?? a.createdAt, 0)
     );
-    return merged;
-  }, [hx, hxOpfs]);
+  }, [persisted, mem, fromStore]);
 
   return (
     <div className="container" style={{ padding: 12, maxWidth: 900 }}>
       {/* onglets */}
       <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <button
-          className="btn sm"
-          style={tab === "history" ? sel : un}
-          onClick={() => setTab("history")}
-        >
+        <button className="btn sm" style={tab === "history" ? sel : un} onClick={() => setTab("history")}>
           Historique
         </button>
-        <button
-          className="btn sm"
-          style={tab === "stats" ? sel : un}
-          onClick={() => setTab("stats")}
-        >
+        <button className="btn sm" style={tab === "stats" ? sel : un} onClick={() => setTab("stats")}>
           Stats
         </button>
       </div>
 
       {tab === "history" ? (
         <HistoryList
-          loading={hxOpfs === null}         // null pendant le fetch OPFS
           records={records}
-          onOpen={(rec) => {
-            const kind = rec.kind || "x01";
-            // Adapte cette navigation à ton routeur
-            if (kind === "x01") go("x01stats", { id: rec.id });
-          }}
+          onOpen={(rec) => go("statsDetail", { matchId: rec.id })}
         />
       ) : (
         <StatsPlaceholder />
@@ -153,30 +132,12 @@ export default function StatsHub(props: StatsHubProps) {
 /* ---------- sous-composants ---------- */
 
 function HistoryList({
-  loading,
   records,
   onOpen,
 }: {
-  loading: boolean;
   records: SavedMatch[];
   onOpen: (r: SavedMatch) => void;
 }) {
-  if (loading) {
-    return (
-      <div
-        style={{
-          padding: 16,
-          borderRadius: 12,
-          border: "1px solid rgba(255,255,255,.08)",
-          background:
-            "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
-        }}
-      >
-        <div className="subtitle">Chargement des données…</div>
-      </div>
-    );
-  }
-
   if (!records.length) {
     return (
       <div
@@ -184,8 +145,7 @@ function HistoryList({
           padding: 16,
           borderRadius: 12,
           border: "1px solid rgba(255,255,255,.08)",
-          background:
-            "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
+          background: "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
         }}
       >
         <div className="subtitle">Aucun enregistrement pour l’instant.</div>
@@ -200,8 +160,7 @@ function HistoryList({
         const status = rec.status ?? "finished";
         const winnerId = rec.winnerId ?? null;
         const first = players[0]?.name || "—";
-        const sub =
-          players.length > 1 ? `${first} + ${players.length - 1} autre(s)` : first;
+        const sub = players.length > 1 ? `${first} + ${players.length - 1} autre(s)` : first;
 
         return (
           <div
@@ -214,24 +173,14 @@ function HistoryList({
               padding: 12,
               borderRadius: 12,
               border: "1px solid rgba(255,255,255,.08)",
-              background:
-                "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
+              background: "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
             }}
           >
             <div style={{ minWidth: 0 }}>
               <div style={{ fontWeight: 800, color: "#ffcf57" }}>
-                {rec.kind?.toUpperCase?.() ?? "MATCH"}
-                {" · "}
-                {status === "in_progress" ? "En cours" : "Terminé"}
+                {rec.kind?.toUpperCase?.() ?? "MATCH"} · {status === "in_progress" ? "En cours" : "Terminé"}
               </div>
-              <div
-                className="subtitle"
-                style={{
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
+              <div className="subtitle" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {sub}
               </div>
               <div className="subtitle" style={{ opacity: 0.8 }}>
@@ -239,11 +188,7 @@ function HistoryList({
               </div>
               {winnerId && (
                 <div className="subtitle" style={{ marginTop: 4 }}>
-                  Vainqueur :{" "}
-                  <b>
-                    {toArr<PlayerLite>(rec.players).find((p) => p.id === winnerId)?.name ??
-                      "—"}
-                  </b>
+                  Vainqueur : <b>{players.find((p) => p.id === winnerId)?.name ?? "—"}</b>
                 </div>
               )}
             </div>
@@ -267,8 +212,7 @@ function StatsPlaceholder() {
         padding: 16,
         borderRadius: 12,
         border: "1px solid rgba(255,255,255,.08)",
-        background:
-          "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
+        background: "linear-gradient(180deg, rgba(18,18,22,.95), rgba(12,12,16,.95))",
       }}
     >
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Stats</div>

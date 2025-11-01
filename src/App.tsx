@@ -72,7 +72,6 @@ function useServiceWorkerUpdate() {
     if (!("serviceWorker" in navigator)) return;
 
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      // Quand le nouveau SW prend le relais → recharge la page
       window.location.reload();
     });
 
@@ -100,9 +99,7 @@ function useServiceWorkerUpdate() {
 
 function SWUpdateBanner() {
   const { showPrompt, updateNow, dismiss } = useServiceWorkerUpdate();
-
   if (!showPrompt) return null;
-
   return (
     <div
       style={{
@@ -162,7 +159,7 @@ export default function App() {
   const [routeParams, setRouteParams] = React.useState<any>(null);
   const [loading, setLoading] = React.useState(true);
 
-  // Demander la persistance de stockage une fois au boot (silencieux si déjà accordée)
+  // Demander la persistance une fois au boot (silencieux si déjà accordée)
   React.useEffect(() => {
     ensurePersisted().catch(() => {});
   }, []);
@@ -230,11 +227,45 @@ export default function App() {
     update((s) => ({ ...s, profiles: fn(s.profiles ?? []) }));
   }
 
-  // Fin de partie → ajoute à l’historique + va sur Stats (onglet Historique)
-  function pushHistory(m: MatchRecord) {
-    update((s) => ({ ...s, history: [...(s.history ?? []), m] }));
-    go("stats", { tab: "history" }); // 👈 ouvre direct l’historique
+ // Fin de partie → normalise, pousse en mémoire + persistant, puis ouvre l’historique
+function pushHistory(m: MatchRecord) {
+  // Normalisation : on garantit id, timestamps, kind, status
+  const now = Date.now();
+  const id =
+    (m as any)?.id ||
+    (m as any)?.matchId ||
+    `x01-${now}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const saved: any = {
+    id,
+    kind: (m as any)?.kind || "x01",
+    status: (m as any)?.status || "finished",
+    players:
+      (m as any)?.players ||
+      (m as any)?.payload?.players ||
+      [], // ok si vide : l’UI affiche "—"
+    winnerId:
+      (m as any)?.winnerId ||
+      (m as any)?.payload?.winnerId ||
+      null,
+    createdAt: (m as any)?.createdAt || now,
+    updatedAt: now,
+    payload: m, // on garde tout brut ici
+  };
+
+  // 1) mémoire (Store)
+  update((s) => ({ ...s, history: [...(s.history ?? []), saved] }));
+
+  // 2) persistant (lib/history) — best effort
+  try {
+    (History as any)?.upsert?.(saved);
+  } catch (e) {
+    console.warn("[App] History.upsert failed:", e);
   }
+
+  // 3) route
+  go("stats", { tab: "history" });
+}
 
   // --------------------------------------------
   // Routes
@@ -242,24 +273,14 @@ export default function App() {
 
   if (loading) {
     page = (
-      <div
-        className="container"
-        style={{ padding: 40, textAlign: "center", color: "#ccc" }}
-      >
+      <div className="container" style={{ padding: 40, textAlign: "center", color: "#ccc" }}>
         Chargement...
       </div>
     );
   } else {
     switch (tab) {
       case "home":
-        page = (
-          <Home
-            store={store}
-            update={update}
-            go={(t: any) => go(t)}
-            onConnect={() => go("profiles")}
-          />
-        );
+        page = <Home store={store} update={update} go={(t: any) => go(t)} onConnect={() => go("profiles")} />;
         break;
 
       case "games":
@@ -267,13 +288,7 @@ export default function App() {
         break;
 
       case "profiles":
-        page = (
-          <Profiles
-            store={store}
-            update={update}
-            setProfiles={setProfiles}
-          />
-        );
+        page = <Profiles store={store} update={update} setProfiles={setProfiles} />;
         break;
 
       case "friends":
@@ -292,30 +307,29 @@ export default function App() {
       case "stats":
         page = (
           <StatsHub
-            go={go}                       // reprise & “voir stats”
-            {...(routeParams ?? {})}      // ex: { tab: "history" }
+            go={go}
+            memHistory={store.history ?? []}   // 👈 passe l’historique en mémoire comme fallback
+            {...(routeParams ?? {})}           // ex: { tab: "history" }
           />
         );
         break;
 
       case "statsDetail": {
-        const rec = History.get(routeParams?.matchId);
+        const rec = (History as any)?.get?.(routeParams?.matchId);
         page = rec ? (
           <div style={{ padding: 16 }}>
             <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
               ← Retour
             </button>
             <h2 style={{ margin: 0 }}>
-              {(rec.kind || "").toUpperCase()} —{" "}
-              {new Date(rec.updatedAt).toLocaleString()}
+              {(rec.kind || "").toUpperCase()} — {new Date(rec.updatedAt).toLocaleString()}
             </h2>
             <div style={{ opacity: 0.85, marginTop: 8 }}>
               Joueurs : {(rec.players || []).map((p: any) => p.name).join(" · ")}
             </div>
             {rec.winnerId && (
               <div style={{ marginTop: 6 }}>
-                Vainqueur : 🏆{" "}
-                {(rec.players || []).find((p: any) => p.id === rec.winnerId)?.name ?? "—"}
+                Vainqueur : 🏆 {(rec.players || []).find((p: any) => p.id === rec.winnerId)?.name ?? "—"}
               </div>
             )}
           </div>
@@ -340,9 +354,7 @@ export default function App() {
               doubleOut: store.settings.doubleOut,
             }}
             onStart={(ids, start, doubleOut) => {
-              const players = store.settings.randomOrder
-                ? ids.slice().sort(() => Math.random() - 0.5)
-                : ids;
+              const players = store.settings.randomOrder ? ids.slice().sort(() => Math.random() - 0.5) : ids;
               setX01Config({ playerIds: players, start, doubleOut });
               go("x01");
             }}
@@ -385,15 +397,11 @@ export default function App() {
             title="Lobby — Cricket"
             profiles={store.profiles ?? []}
             onStart={(ids) => {
-              const players = store.settings.randomOrder
-                ? ids.slice().sort(() => Math.random() - 0.5)
-                : ids;
-              // à brancher quand Cricket prêt
+              const players = store.settings.randomOrder ? ids.slice().sort(() => Math.random() - 0.5) : ids;
               go("cricket");
             }}
           />
         );
-        // Place-holder de jeu Cricket :
         page = <CricketPlay playerIds={[]} onFinish={pushHistory} />;
         break;
 
@@ -406,14 +414,7 @@ export default function App() {
         break;
 
       default:
-        page = (
-          <Home
-            store={store}
-            update={update}
-            go={(t: any, p?: any) => go(t, p)}
-            onConnect={() => go("profiles")}
-          />
-        );
+        page = <Home store={store} update={update} go={(t: any, p?: any) => go(t, p)} onConnect={() => go("profiles")} />;
     }
   }
 
