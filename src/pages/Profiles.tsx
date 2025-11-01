@@ -4,6 +4,7 @@
 // - Bloc unique Connexion/Création (sans mot de passe)
 // - Amis: un seul panneau repliable "Amis (N)" trié par statut
 // - Profils locaux: compteur, mini-stats ruban doré, Éditer au-dessus de Suppr.
+// - [RESPONSIVE] Mini-stats incassables : auto-fit/minmax + clamp()
 // ============================================
 
 import React from "react";
@@ -174,7 +175,7 @@ function ActiveProfileBlock({
   onEdit: (name: string, avatar?: File | null) => void;
 }) {
   return (
-    <div className="row" style={{ gap: 14, alignItems: "center" }}>
+    <div className="row" style={{ gap: 14, alignItems: "center", flexWrap: "wrap" }}>
       {/* Avatar médaillon */}
       <div
         style={{
@@ -193,7 +194,7 @@ function ActiveProfileBlock({
       </div>
 
       {/* Infos + actions */}
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+      <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
         <div style={{ fontWeight: 800, fontSize: 20, whiteSpace: "nowrap" }}>
           <a
             href={`#/stats?pid=${active?.id}`}
@@ -221,7 +222,7 @@ function ActiveProfileBlock({
           </span>
         </div>
 
-        {/* Ruban doré Mini-Stats */}
+        {/* Ruban doré Mini-Stats (responsive) */}
         {active?.id && (
           <div style={{ marginTop: 8, width: "100%" }}>
             <GoldMiniStats profileId={active.id} />
@@ -229,7 +230,7 @@ function ActiveProfileBlock({
         )}
 
         {/* Actions */}
-        <div className="row" style={{ gap: 8, marginTop: 10, justifyContent: "center", flexWrap: "nowrap" }}>
+        <div className="row" style={{ gap: 8, marginTop: 10, justifyContent: "center", flexWrap: "wrap" }}>
           <EditInline initialName={active?.name || ""} onSave={onEdit} compact={true} />
           <button className="btn sm" onClick={onToggleAway} title="Basculer le statut">
             {selfStatus === "away" ? "EN LIGNE" : "ABSENT"}
@@ -306,7 +307,7 @@ function UnifiedAuthBlock({
       </div>
 
       {/* Création rapide (preview avatar à gauche) */}
-      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <label
           title="Choisir un avatar"
           style={{
@@ -335,7 +336,7 @@ function UnifiedAuthBlock({
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submitCreate()}
-          style={{ flex: 1 }}
+          style={{ flex: 1, minWidth: 160 }}
         />
 
         <button className="btn primary sm" onClick={submitCreate}>
@@ -431,12 +432,12 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
   }
 
   return (
-    <div className="item" style={{ gap: 10, alignItems: "center", marginBottom: 8 }}>
+    <div className="item" style={{ gap: 10, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
       <label
         title="Choisir un avatar"
         style={{
           width: 44, height: 44, borderRadius: "50%", overflow: "hidden",
-          border: "1px solid var(--stroke)", display: "grid", placeItems: "center",
+          border: "1px solid (var(--stroke))", display: "grid", placeItems: "center",
           background: "#0f0f14", cursor: "pointer", flex: "0 0 auto"
         }}
       >
@@ -454,10 +455,10 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && submit()}
-        style={{ maxWidth: 260 }}
+        style={{ flex: 1, minWidth: 160, maxWidth: 260 }}
       />
 
-      <div className="row" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
         <button className="btn primary sm" onClick={submit}>Ajouter</button>
         {(name || file) && (
           <button className="btn sm" onClick={() => { setName(""); setFile(null); setPreview(null); }}>
@@ -508,7 +509,7 @@ function LocalProfiles({
         const isEdit = editing === p.id;
         const s = statsMap[p.id];
         return (
-          <div className="item" key={p.id} style={{ gap: 10, alignItems: "center" }}>
+          <div className="item" key={p.id} style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             {/* gauche */}
             <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
               <div style={{ flex: "0 0 auto" }}>
@@ -517,7 +518,7 @@ function LocalProfiles({
 
               <div style={{ minWidth: 0 }}>
                 {isEdit ? (
-                  <div className="row" style={{ gap: 8 }}>
+                  <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                     <input className="input" value={tmpName} onChange={(e) => setTmpName(e.target.value)} style={{ width: 200 }} />
                     <label className="btn sm">
                       Avatar
@@ -538,7 +539,7 @@ function LocalProfiles({
                       </a>
                     </div>
 
-                    {/* ruban doré */}
+                    {/* ruban doré — responsive sans chevauchements */}
                     <div style={{ marginTop: 6 }}>
                       <GoldMiniStats profileId={p.id} />
                     </div>
@@ -656,7 +657,7 @@ function EditInline({
   );
 }
 
-/* ------ Ruban doré Mini-Stats (Moy/3, Best, CO, Win%) ------ */
+/* ------ Ruban doré Mini-Stats (1 ligne, valeurs dorées réduites) ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
   const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
 
@@ -670,54 +671,135 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
         if (!cancelled) setStats(null);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [profileId]);
 
   const avg3 = stats?.avg3 ?? 0;
   const best = stats?.bestVisit ?? 0;
-  const co = (stats as any)?.co ?? (stats as any)?.coCount ?? (stats as any)?.checkouts ?? 0;
+  const co =
+    (stats as any)?.co ??
+    (stats as any)?.coCount ??
+    (stats as any)?.checkouts ??
+    0;
   const winPct =
     stats && (stats as any).legsPlayed > 0
-      ? Math.round(((stats as any).legsWon / (stats as any).legsPlayed) * 100)
+      ? Math.round(
+          ((stats as any).legsWon / (stats as any).legsPlayed) * 100
+        )
       : null;
+
+  const pillW = "clamp(68px, 19vw, 84px)"; // largeur fixe pour tenir sur une ligne
 
   return (
     <div
       style={{
         borderRadius: 10,
-        padding: "8px 10px",
-        background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
+        padding: "6px 8px",
+        background:
+          "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
         border: "1px solid rgba(240,177,42,.25)",
-        boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
+        boxShadow:
+          "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
       }}
     >
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: 14,
-          alignItems: "center",
+          display: "flex",
+          flexWrap: "nowrap",
+          alignItems: "stretch",
+          overflow: "hidden",
         }}
       >
-        <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} />
-        <GoldStatItem label="Best" value={String(best)} />
-        <GoldStatItem label="CO" value={String(co)} />
-        <GoldStatItem label="Win%" value={winPct === null ? "—" : `${winPct}`} />
+        <GoldStatItem
+          label="Moy/3"
+          value={(Math.round(avg3 * 10) / 10).toFixed(1)}
+          width={pillW}
+        />
+        <GoldSep />
+        <GoldStatItem label="Best" value={String(best)} width={pillW} />
+        <GoldSep />
+        <GoldStatItem label="CO" value={String(co)} width={pillW} />
+        <GoldSep />
+        <GoldStatItem
+          label="Win%"
+          value={winPct === null ? "—" : `${winPct}`}
+          width={pillW}
+        />
       </div>
     </div>
   );
 }
 
-function GoldStatItem({ label, value }: { label: string; value: string }) {
+/* ---- séparateur vertical doré ---- */
+function GoldSep() {
   return (
-    <div style={{ display: "grid", gap: 2 }}>
-      <span style={{ fontSize: 12, color: "rgba(255,255,255,.66)" }}>{label}</span>
+    <div
+      aria-hidden
+      style={{
+        width: 6,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 1,
+          height: "65%",
+          background: "rgba(240,177,42,.18)",
+          borderRadius: 1,
+        }}
+      />
+    </div>
+  );
+}
+
+/* ---- pastille individuelle ---- */
+function GoldStatItem({
+  label,
+  value,
+  width,
+}: {
+  label: string;
+  value: string;
+  width: string;
+}) {
+  return (
+    <div
+      style={{
+        width,
+        minWidth: 0,
+        display: "grid",
+        gap: 1,
+        textAlign: "center",
+        paddingInline: 2,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {/* label (blanc/gris) */}
+      <span
+        style={{
+          fontSize: "clamp(8.5px, 1.9vw, 10px)",
+          color: "rgba(255,255,255,.66)",
+          lineHeight: 1.05,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </span>
+
+      {/* valeur dorée (plus petite qu'avant) */}
       <span
         style={{
           fontWeight: 800,
-          letterSpacing: .2,
+          letterSpacing: 0.2,
           color: "#f0b12a",
-          textShadow: "0 0 8px rgba(240,177,42,.28)",
+          textShadow: "0 0 5px rgba(240,177,42,.18)",
+          fontSize: "clamp(10px, 2.8vw, 13px)", // 🔹 réduit : avant 11.5–15px
+          lineHeight: 1.05,
+          whiteSpace: "nowrap",
         }}
       >
         {value}

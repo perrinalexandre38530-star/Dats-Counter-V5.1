@@ -19,9 +19,8 @@ import { useX01Engine } from "../hooks/useX01Engine";
 import Keypad from "../components/Keypad";
 import EndOfLegOverlay from "../components/EndOfLegOverlay";
 import { playSound } from "../lib/sound";
-import { pushFromLeg as pushMatchLog } from "../lib/matchStats";
 
-// Historique (⚠️ PAS d'import de makeX01RecordFromEngine ici)
+// Historique
 import { History, type SavedMatch } from "../lib/history";
 
 // Pont “stats unifiées”
@@ -109,7 +108,6 @@ async function commitFinishedLeg(opts: {
 
 /* ---------------------------------------------
    Helper local (compat) pour fabriquer un MatchRecord
-   (remplace l'ancien makeX01RecordFromEngine exporté)
 ----------------------------------------------*/
 function makeX01RecordFromEngineCompat(args: {
   engine: {
@@ -125,7 +123,6 @@ function makeX01RecordFromEngineCompat(args: {
   existingId?: string;
 }): MatchRecord {
   const { engine, existingId } = args;
-  // Snapshot minimal (adapté à l’existant X01Snapshot)
   const payload = {
     state: {
       rules: engine.rules,
@@ -487,10 +484,10 @@ export default function X01Play({
         console.warn("computeLegStats() error:", e);
       }
 
-      // >>> ICI : commit (Historique + stats unifiées)
+      // >>> Commit (Historique + stats unifiées)
       try {
         await commitFinishedLeg({
-          result: enriched as any, // accepte legacy ou LegStats-like
+          result: enriched as any,
           resumeId,
           kind: "x01",
         });
@@ -682,7 +679,7 @@ export default function X01Play({
     if (!willBust && doubleOut && after === 0) willBust = !isDoubleFinish(currentThrow);
     const ptsForStats = willBust ? 0 : volleyPts;
 
-    // ---- NEW: logger la volée (pour computeLegStats)
+    // ---- Logger la volée (pour computeLegStats)
     {
       const isCheckout = !willBust && after === 0;
       pushVisitLog({
@@ -841,6 +838,26 @@ export default function X01Play({
     cursor: "pointer",
   };
 
+  // utilitaires flush (déclaré AVANT tout usage)
+  const flushPendingFinish = React.useCallback(() => {
+    if (pendingFinish) {
+      const m: MatchRecord = pendingFinish;
+      setPendingFinish(null);
+      setOverlayOpen(false);
+      onFinish(m);
+      return;
+    }
+    const rec: MatchRecord = makeX01RecordFromEngineCompat({
+      engine: buildEngineLike([], winner?.id ?? null),
+      existingId: historyIdRef.current,
+    });
+    History.upsert(rec);
+    historyIdRef.current = rec.id;
+    onFinish(rec);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFinish, onFinish, winner?.id]);
+
+  // (le early return arrive APRES la définition de flushPendingFinish -> pas de TDZ)
   if (!state.players?.length) {
     return (
       <div className="container" style={{ padding: 16 }}>
@@ -869,7 +886,6 @@ export default function X01Play({
     if (justFinished) {
       persistOnFinish();
 
-      // agrégation simple si on a les stats de la dernière manche
       try {
         const maybeLeg: RichLegStats | undefined = (lastLegResult as any)?.__legStats;
         if (maybeLeg) {
@@ -914,25 +930,6 @@ export default function X01Play({
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }, [isOver, liveRanking, voiceOn, winner?.id, lastLegResult, state.players, scoresByPlayer, start, doubleOut]);
-
-  // utilitaires flush
-  const flushPendingFinish = React.useCallback(() => {
-    if (pendingFinish) {
-      const m: MatchRecord = pendingFinish;
-      setPendingFinish(null);
-      setOverlayOpen(false);
-      onFinish(m);
-      return;
-    }
-    const rec: MatchRecord = makeX01RecordFromEngineCompat({
-      engine: buildEngineLike([], winner?.id ?? null),
-      existingId: historyIdRef.current,
-    });
-    History.upsert(rec);
-    historyIdRef.current = rec.id;
-    onFinish(rec);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingFinish, onFinish, winner?.id]);
 
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
 
@@ -1308,7 +1305,7 @@ export default function X01Play({
             <div style={{ ...miniCard, display: "flex", flexDirection: "column" }}>
               <div style={miniTitle}>Classement</div>
               <div style={{ overflow: "hidden", flex: 1 }}>
-                {liveRanking.map((r, i) => (
+                {props.liveRanking.map((r, i) => (
                   <div key={r.id} style={miniRankRow}>
                     <div style={miniRankName}>{i + 1}. {r.name}</div>
                     <div style={r.score === 0 ? miniRankScoreFini : miniRankScore}>
