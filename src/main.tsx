@@ -1,22 +1,46 @@
 // ============================================
 // src/main.tsx — Entrée principale stable Cloudflare + React + Tailwind
+// - PROD : enregistre uniquement /sw.js (non-module), chemin absolu
+// - DEV  : désenregistre tout Service Worker + purge caches
 // ============================================
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 
-// ✅ Enregistrement du Service Worker (production uniquement)
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
+// ---------- Service Worker policy ----------
+if ("serviceWorker" in navigator) {
+  if (import.meta.env.PROD) {
+    // Production (Cloudflare Pages) — enregistre /sw.js
+    window.addEventListener("load", async () => {
+      try {
+        // Si d’anciens SW existent (ex: /service-worker.js), on les retire
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(
+          regs
+            .filter((r) => !(r.active?.scriptURL.endsWith("/sw.js")))
+            .map((r) => r.unregister())
+        );
+
+        const reg = await navigator.serviceWorker.register("/sw.js"); // chemin ABSOLU
+        console.log("✅ Service Worker enregistré :", reg.scope);
+      } catch (err) {
+        console.error("⚠️ SW register error", err);
+      }
+    });
+  } else {
+    // Développement / StackBlitz — jamais de SW persistant
     navigator.serviceWorker
-      .register("/service-worker.js")
-      .then(() => console.log("✅ Service Worker enregistré"))
-      .catch((err) => console.warn("⚠️ Erreur Service Worker :", err));
-  });
+      .getRegistrations()
+      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+      .catch(() => {});
+    if (typeof caches !== "undefined" && caches.keys) {
+      caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
+    }
+  }
 }
 
-// ✅ Point d’entrée React 18/19 — strict mode activé
+// ---------- Point d’entrée React ----------
 const container = document.getElementById("root");
 if (!container) throw new Error("❌ Élément #root introuvable dans index.html");
 
@@ -25,23 +49,3 @@ createRoot(container).render(
     <App />
   </React.StrictMode>
 );
-
-// --- Service Worker policy (dev vs prod) ---
-if ('serviceWorker' in navigator) {
-  if (import.meta.env.PROD) {
-    // Prod: OK pour la PWA
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  } else {
-    // Dev/StackBlitz: on s'assure de ne JAMAIS garder un SW en cache
-    navigator.serviceWorker.getRegistrations().then(regs => {
-      regs.forEach(r => r.unregister());
-    });
-    if (typeof caches !== 'undefined' && caches.keys) {
-      caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
-    }
-    // Empêche un ancien SW déjà contrôlant la page de rester en contrôle
-    navigator.serviceWorker.ready
-      .then(reg => reg?.unregister?.())
-      .catch(() => {});
-  }
-}
