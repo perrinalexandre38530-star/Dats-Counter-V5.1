@@ -2,8 +2,8 @@
 // src/pages/X01Play.tsx
 // Header sticky, Keypad fixed, Checkout centré sous la volée
 // Sons (dart/bust), vibration, TTS (volée & fin de partie)
-// Avatar agrandi, NOM centré au-dessus du score
-// Mini-Stats sous l’avatar + mini-Classement sous la volée  ⟵ (MAJ)
+// Avatar agrandi + NOM sous l’avatar (MAJ)
+// Mini-Stats sous l’avatar + mini-Classement sous la volée  (MAJ)
 // Bouton QUITTER doré
 // + Reprise/sauvegarde Historique (History.upsert + resumeId)
 // + CONTINUER jusqu’à l’avant-dernier + Overlay Classement/Stats de manche
@@ -46,7 +46,10 @@ type EnginePlayer = { id: string; name: string };
 type RankItem = { id: string; name: string; score: number };
 
 const NAV_HEIGHT = 64;
-const KEYPAD_HEIGHT = 360;
+// ↓ ancien: 360
+const KEYPAD_HEIGHT = 300;
+// mise à l’échelle visuelle du clavier (sans toucher au composant)
+const KEYPAD_SCALE = 0.92;
 
 /* ---------------------------------------------
    Helpers commit Fin de manche (compat Legacy/New)
@@ -953,7 +956,7 @@ export default function X01Play({
   }, [isOver]);
 
   return (
-    <div className="x01play-container" style={{ paddingBottom: KEYPAD_HEIGHT + NAV_HEIGHT + 16 }}>
+    <div className="x01play-container" style={{ paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16 }}>
       {/* Barre haute */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
@@ -994,10 +997,21 @@ export default function X01Play({
       />
 
       {/* Spacer keypad */}
-      <div style={{ height: KEYPAD_HEIGHT + 8 }} />
+      <div style={{ height: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 8 }} />
 
       {/* Keypad FIXED */}
-      <div style={{ position: "fixed", left: 0, right: 0, bottom: NAV_HEIGHT, zIndex: 45, padding: "0 12px 8px" }}>
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: NAV_HEIGHT,
+          zIndex: 45,
+          padding: "0 12px 8px",
+          transform: `scale(${KEYPAD_SCALE})`,
+          transformOrigin: "bottom center",
+        }}
+      >
         <Keypad
           currentThrow={currentThrow}
           multiplier={multiplier}
@@ -1073,7 +1087,7 @@ export default function X01Play({
 
   /* ===== sous-composants internes ===== */
 
-  /** HEADER : Avatar + (en dessous) Mini-Stats | Centre : nom+score+volée+checkout + (en dessous) Mini-Classement */
+  /** HEADER : Avatar + (en dessous) NOM + Mini-Stats | Centre : score+volée+checkout + (en dessous) Mini-Classement */
   function HeaderBlock(props: {
     currentPlayer?: EnginePlayer | null;
     currentAvatar: string | null;
@@ -1109,9 +1123,9 @@ export default function X01Play({
           marginBottom: 12,
         }}
       >
-        {/* Deux colonnes : Avatar(+stats) | Centre (score/volée/checkout + classement) */}
+        {/* Deux colonnes : Avatar(+NOM+stats) | Centre (score/volée/checkout + classement) */}
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
-          {/* Colonne gauche : Avatar + Mini-Stats en dessous */}
+          {/* Colonne gauche : Avatar + NOM + Mini-Stats en dessous */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
             <div
               style={{
@@ -1142,6 +1156,21 @@ export default function X01Play({
               )}
             </div>
 
+            {/* NOM sous l’avatar */}
+            <div
+              style={{
+                fontWeight: 900,
+                fontSize: 18,
+                color: "#ffcf57",
+                letterSpacing: 0.4,
+                textAlign: "center",
+                maxWidth: 140,
+                lineHeight: 1.05,
+              }}
+            >
+              {currentPlayer?.name ?? "—"}
+            </div>
+
             {/* Mini-Stats sous avatar */}
             <div style={{ ...miniCard, width: 190, height: "auto", padding: 10 }}>
               <div style={miniTitle}>Stats</div>
@@ -1154,11 +1183,9 @@ export default function X01Play({
             </div>
           </div>
 
-          {/* Colonne centre : nom + score + volée + checkout + (en dessous) classement */}
+          {/* Colonne centre : score + volée + checkout + (en dessous) classement */}
           <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ fontWeight: 900, fontSize: 24, color: "#ffcf57", letterSpacing: 0.4 }}>
-              {currentPlayer?.name ?? "—"}
-            </div>
+            {/* (Nom central supprimé pour gagner en hauteur) */}
 
             <div
               style={{
@@ -1519,7 +1546,7 @@ export default function X01Play({
           position: "fixed",
           left: "50%",
           transform: "translateX(-50%)",
-          bottom: NAV_HEIGHT + KEYPAD_HEIGHT + 80,
+          bottom: NAV_HEIGHT + Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 80,
           zIndex: 47,
           background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
           color: "#1a1a1a",
