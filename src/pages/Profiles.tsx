@@ -73,6 +73,7 @@ export default function Profiles({
 
   const active = profiles.find((p) => p.id === activeProfileId) || null;
 
+  // Précharge les stats du profil actif si absentes
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -83,10 +84,35 @@ export default function Profiles({
         if (!cancelled) setStatsMap((m) => ({ ...m, [pid]: s }));
       } catch {}
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
+  // ✅ Pré-chauffage pour TOUS les profils locaux visibles
+  React.useEffect(() => {
+    let stopped = false;
+    (async () => {
+      // Limite de sécurité si très grosse liste
+      const ids = profiles.map((p) => p.id).slice(0, 48);
+      for (const id of ids) {
+        if (stopped) break;
+        if (statsMap[id]) continue;
+        try {
+          const s = await getBasicProfileStats(id);
+          if (!stopped) {
+            setStatsMap((m) => (m[id] ? m : { ...m, [id]: s }));
+          }
+        } catch {}
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [profiles, /* statsMap intentionally omitted for perf */]);
+
+  // ✅ Moyenne 3-darts du profil actif (on passe la valeur brute au ring)
   const activeAvg3D = active?.id ? statsMap[active.id]?.avg3 ?? null : null;
 
   return (
@@ -199,49 +225,50 @@ function ActiveProfileBlock({
   onQuit: () => void;
   onEdit: (name: string, avatar?: File | null) => void;
 }) {
-  const AVA = 96;        // diamètre avatar
-  const PAD = 10;        // épaisseur externe pour le ring (en px)
-  const STAR = 14;       // taille d’une étoile
+  const AVATAR = 96; // diamètre image
+  const BORDER = 8;  // bord + padding visuel du médaillon (cf. wrapper width/height = AVATAR + BORDER)
+  const MEDALLION = AVATAR + BORDER; // ✅ diamètre réel utilisé par l'anneau
+  const STAR = 14;
 
   return (
     <div className="apb">
-      {/* Wrapper médaillon (relative) */}
+      {/* Médaillon (relative) */}
       <div
         style={{
-          width: AVA + 8,
-          height: AVA + 8,
+          width: MEDALLION,
+          height: MEDALLION,
           borderRadius: "50%",
-          padding: 4,
+          padding: BORDER / 2,
           background: "linear-gradient(135deg, rgba(240,177,42,.9), rgba(120,80,10,.7))",
           boxShadow: "0 0 26px rgba(240,177,42,.35), inset 0 0 12px rgba(0,0,0,.55)",
           position: "relative",
           flex: "0 0 auto",
         }}
       >
-        {/* RING EXTERNE : conteneur absolu élargi */}
+        {/* Anneau d’étoiles — ancré sur le diamètre visuel MEDALLION */}
         <div
           aria-hidden
           style={{
             position: "absolute",
-            left: -(PAD + STAR / 2),
-            top:  -(PAD + STAR / 2),
-            width:  AVA + 8 + (PAD + STAR / 2) * 2,
-            height: AVA + 8 + (PAD + STAR / 2) * 2,
+            left: -(STAR / 2),
+            top: -(STAR / 2),
+            width: MEDALLION + STAR,
+            height: MEDALLION + STAR,
             pointerEvents: "none",
           }}
         >
           <ProfileStarRing
-            anchorSize={104}
-           gapPx={0}
-           starSize={14}
-           stepDeg={10}
-           avg3d={activeAvg3D ?? 0}
-           />
+            anchorSize={MEDALLION} // ✅ ancrage exact
+            gapPx={-2}             // proche du bord
+            starSize={STAR}
+            stepDeg={10}
+            avg3d={activeAvg3D ?? 0} // ✅ valeur brute (demi-étoiles gérées dans le composant)
+          />
         </div>
 
         {/* Avatar (étoiles internes désactivées) */}
         <ProfileAvatar
-          size={AVA}
+          size={AVATAR}
           dataUrl={active?.avatarDataUrl}
           label={active?.name?.[0]?.toUpperCase() || "?"}
           showStars={false}
@@ -253,7 +280,10 @@ function ActiveProfileBlock({
         <div style={{ fontWeight: 800, fontSize: 20, whiteSpace: "nowrap" }}>
           <a
             href={`#/stats?pid=${active?.id}`}
-            onClick={(e) => { e.preventDefault(); if (active?.id) location.hash = `#/stats?pid=${active.id}`; }}
+            onClick={(e) => {
+              e.preventDefault();
+              if (active?.id) location.hash = `#/stats?pid=${active.id}`;
+            }}
             style={{ color: "#f0b12a", textDecoration: "none" }}
             title="Voir les statistiques"
           >
@@ -262,9 +292,31 @@ function ActiveProfileBlock({
         </div>
 
         <div className="row" style={{ gap: 8, alignItems: "center", marginTop: 4 }}>
-          <StatusDot kind={selfStatus === "away" ? "away" : selfStatus === "offline" ? "offline" : "online"} />
-          <span style={{ fontWeight: 700, color: selfStatus === "away" ? "#f0b12a" : selfStatus === "offline" ? "#9aa0a6" : "#1fb46a" }}>
-            {selfStatus === "away" ? "Absent" : selfStatus === "offline" ? "Hors ligne" : "En ligne"}
+          <StatusDot
+            kind={
+              selfStatus === "away"
+                ? "away"
+                : selfStatus === "offline"
+                ? "offline"
+                : "online"
+            }
+          />
+          <span
+            style={{
+              fontWeight: 700,
+              color:
+                selfStatus === "away"
+                  ? "#f0b12a"
+                  : selfStatus === "offline"
+                  ? "#9aa0a6"
+                  : "#1fb46a",
+            }}
+          >
+            {selfStatus === "away"
+              ? "Absent"
+              : selfStatus === "offline"
+              ? "Hors ligne"
+              : "En ligne"}
           </span>
         </div>
 
@@ -306,36 +358,95 @@ function UnifiedAuthBlock({
   const [preview, setPreview] = React.useState<string | null>(null);
   const createRef = React.useRef<HTMLInputElement>(null);
 
-  React.useEffect(() => { if (autoFocusCreate) createRef.current?.focus(); }, [autoFocusCreate]);
   React.useEffect(() => {
-    if (!file) { setPreview(null); return; }
-    const r = new FileReader(); r.onload = () => setPreview(String(r.result)); r.readAsDataURL(file);
+    if (autoFocusCreate) createRef.current?.focus();
+  }, [autoFocusCreate]);
+
+  React.useEffect(() => {
+    if (!file) {
+      setPreview(null);
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => setPreview(String(r.result));
+    r.readAsDataURL(file);
   }, [file]);
 
   function submitCreate() {
     if (!name.trim()) return;
     onCreate(name.trim(), file);
-    setName(""); setFile(null); setPreview(null);
+    setName("");
+    setFile(null);
+    setPreview(null);
   }
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
+      {/* Connexion existant */}
       <div className="row" style={{ gap: 8 }}>
-        <select className="input" value={chosen} onChange={(e) => setChosen(e.target.value)} style={{ flex: 1 }}>
+        <select
+          className="input"
+          value={chosen}
+          onChange={(e) => setChosen(e.target.value)}
+          style={{ flex: 1 }}
+        >
           {profiles.length === 0 && <option value="">Aucun profil enregistré</option>}
-          {profiles.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
         </select>
-        <button className="btn primary sm" onClick={() => chosen && onConnect(chosen)}>Connexion</button>
+        <button className="btn primary sm" onClick={() => chosen && onConnect(chosen)}>
+          Connexion
+        </button>
       </div>
 
+      {/* Création */}
       <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <label title="Choisir un avatar" style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", border: "1px solid var(--stroke)", display: "grid", placeItems: "center", background: "#0f0f14", cursor: "pointer", flex: "0 0 auto" }}>
-          <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          {preview ? <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>}
+        <label
+          title="Choisir un avatar"
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: "50%",
+            overflow: "hidden",
+            border: "1px solid var(--stroke)",
+            display: "grid",
+            placeItems: "center",
+            background: "#0f0f14",
+            cursor: "pointer",
+            flex: "0 0 auto",
+          }}
+        >
+          <input
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+          {preview ? (
+            <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            <span className="subtitle" style={{ fontSize: 11 }}>
+              Avatar
+            </span>
+          )}
         </label>
 
-        <input ref={createRef} className="input" placeholder="Nom du profil" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCreate()} style={{ flex: 1, minWidth: 160 }} />
-        <button className="btn primary sm" onClick={submitCreate}>Ajouter</button>
+        <input
+          ref={createRef}
+          className="input"
+          placeholder="Nom du profil"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitCreate()}
+          style={{ flex: 1, minWidth: 160 }}
+        />
+
+        <button className="btn primary sm" onClick={submitCreate}>
+          Ajouter
+        </button>
       </div>
     </div>
   );
@@ -355,8 +466,23 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
 
   return (
     <div className="card" style={{ background: "#111118" }}>
-      <button className="row-between" onClick={() => setOpen((v) => !v)} style={{ width: "100%", background: "transparent", color: "inherit", border: 0, padding: "6px 2px", cursor: "pointer", fontWeight: 700 }}>
-        <span>Amis ({merged.length})</span><span className="subtitle" aria-hidden>▾</span>
+      <button
+        className="row-between"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%",
+          background: "transparent",
+          color: "inherit",
+          border: 0,
+          padding: "6px 2px",
+          cursor: "pointer",
+          fontWeight: 700,
+        }}
+      >
+        <span>Amis ({merged.length})</span>
+        <span className="subtitle" aria-hidden>
+          ▾
+        </span>
       </button>
 
       {open && (
@@ -365,47 +491,57 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
             <div className="subtitle">Aucun ami pour l’instant</div>
           ) : (
             merged.map((f) => {
-              const AVA = 44, PAD = 8, STAR = 9;
+              const AVA = 44;
+              const MEDALLION = AVA; // ici pas de bord visuel ajouté
+              const STAR = 8;
               return (
                 <div className="item" key={f.id} style={{ background: "#0f0f14" }}>
                   <div className="row" style={{ gap: 10, minWidth: 0 }}>
                     <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
-                      {/* ring externe */}
                       <div
                         aria-hidden
                         style={{
                           position: "absolute",
-                          left: -(PAD + STAR / 2),
-                          top:  -(PAD + STAR / 2),
-                          width:  AVA + (PAD + STAR / 2) * 2,
-                          height: AVA + (PAD + STAR / 2) * 2,
+                          left: -(STAR / 2),
+                          top: -(STAR / 2),
+                          width: MEDALLION + STAR,
+                          height: MEDALLION + STAR,
                           pointerEvents: "none",
                         }}
                       >
                         <ProfileStarRing
-                         anchorSize={44}     // = taille de l’avatar dans la liste
-                         gapPx={5}
-                         starSize={8}
-                         stepDeg={10}
-                        rotationDeg={0}
-                        avg3d={f.stats?.avg3 ?? 0}
-                      />
+                          anchorSize={MEDALLION}
+                          gapPx={5}
+                          starSize={STAR}
+                          stepDeg={10}
+                          avg3d={f.stats?.avg3 ?? 0} // si Friend ne possède pas de stats, l’anneau ne s’affiche pas (0)
+                        />
                       </div>
 
-                      <ProfileAvatar size={AVA} dataUrl={f.avatarDataUrl} label={f.name?.[0]?.toUpperCase() || "?"} showStars={false} />
+                      <ProfileAvatar
+                        size={AVA}
+                        dataUrl={f.avatarDataUrl}
+                        label={f.name?.[0]?.toUpperCase() || "?"}
+                        showStars={false}
+                      />
                     </div>
 
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
                       {f.stats && (
                         <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                          Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win: {Math.round((f.stats?.winrate ?? 0) * 100)}%
+                          Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win:{" "}
+                          {Math.round((f.stats?.winrate ?? 0) * 100)}%
                         </div>
                       )}
                     </div>
                   </div>
                   <span className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                    {f.status === "online" ? "En ligne" : f.status === "away" ? "Absent" : "Hors-ligne"}
+                    {f.status === "online"
+                      ? "En ligne"
+                      : f.status === "away"
+                      ? "Absent"
+                      : "Hors-ligne"}
                   </span>
                 </div>
               );
@@ -424,29 +560,79 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
   const [preview, setPreview] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!file) { setPreview(null); return; }
-    const r = new FileReader(); r.onload = () => setPreview(String(r.result)); r.readAsDataURL(file);
+    if (!file) {
+      setPreview(null);
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => setPreview(String(r.result));
+    r.readAsDataURL(file);
   }, [file]);
 
   function submit() {
     if (!name.trim()) return;
     onCreate(name.trim(), file);
-    setName(""); setFile(null); setPreview(null);
+    setName("");
+    setFile(null);
+    setPreview(null);
   }
 
   return (
     <div className="item" style={{ gap: 10, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
-      <label title="Choisir un avatar" style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", border: "1px solid (var(--stroke))", display: "grid", placeItems: "center", background: "#0f0f14", cursor: "pointer", flex: "0 0 auto" }}>
-        <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        {preview ? <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>}
+      <label
+        title="Choisir un avatar"
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: "50%",
+          overflow: "hidden",
+          border: "1px solid (var(--stroke))",
+          display: "grid",
+          placeItems: "center",
+          background: "#0f0f14",
+          cursor: "pointer",
+          flex: "0 0 auto",
+        }}
+      >
+        <input
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
+        {preview ? (
+          <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <span className="subtitle" style={{ fontSize: 11 }}>
+            Avatar
+          </span>
+        )}
       </label>
 
-      <input className="input" placeholder="Nom du profil" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ flex: 1, minWidth: 160, maxWidth: 260 }} />
+      <input
+        className="input"
+        placeholder="Nom du profil"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+        style={{ flex: 1, minWidth: 160, maxWidth: 260 }}
+      />
 
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-        <button className="btn primary sm" onClick={submit}>Ajouter</button>
+        <button className="btn primary sm" onClick={submit}>
+          Ajouter
+        </button>
         {(name || file) && (
-          <button className="btn sm" onClick={() => { setName(""); setFile(null); setPreview(null); }}>Annuler</button>
+          <button
+            className="btn sm"
+            onClick={() => {
+              setName("");
+              setFile(null);
+              setPreview(null);
+            }}
+          >
+            Annuler
+          </button>
         )}
       </div>
     </div>
@@ -491,42 +677,61 @@ function LocalProfiles({
       {profiles.map((p) => {
         const isEdit = editing === p.id;
         const s = statsMap[p.id];
-        const AVA = 48, PAD = 8, STAR = 9;
+        const AVA = 48;
+        const MEDALLION = AVA; // pas d’épaisseur supplémentaire ici
+        const STAR = 9;
+
         return (
           <div className="item" key={p.id} style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            {/* gauche */}
             <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
               <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
+                {/* anneau externe */}
                 <div
                   aria-hidden
                   style={{
                     position: "absolute",
-                    left: -(PAD + STAR / 2),
-                    top:  -(PAD + STAR / 2),
-                    width:  AVA + (PAD + STAR / 2) * 2,
-                    height: AVA + (PAD + STAR / 2) * 2,
+                    left: -(STAR / 2),
+                    top: -(STAR / 2),
+                    width: MEDALLION + STAR,
+                    height: MEDALLION + STAR,
                     pointerEvents: "none",
                   }}
                 >
                   <ProfileStarRing
-                   anchorSize={48}     // = taille de l’avatar local
-                   gapPx={5}
-                   starSize={9}
-                   stepDeg={10}
-                   rotationDeg={0}
-                    avg3d={s?.avg3 ?? 0}
+                    anchorSize={MEDALLION}
+                    gapPx={5}
+                    starSize={STAR}
+                    stepDeg={10}
+                    avg3d={s?.avg3 ?? 0} // ✅ brute, pour afficher demi-étoiles
                   />
                 </div>
 
-                <ProfileAvatar size={AVA} dataUrl={p.avatarDataUrl} label={p.name?.[0]?.toUpperCase() || "?"} showStars={false} />
+                <ProfileAvatar
+                  size={AVA}
+                  dataUrl={p.avatarDataUrl}
+                  label={p.name?.[0]?.toUpperCase() || "?"}
+                  showStars={false}
+                />
               </div>
 
               <div style={{ minWidth: 0 }}>
                 {isEdit ? (
                   <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                    <input className="input" value={tmpName} onChange={(e) => setTmpName(e.target.value)} style={{ width: 200 }} />
+                    <input
+                      className="input"
+                      value={tmpName}
+                      onChange={(e) => setTmpName(e.target.value)}
+                      style={{ width: 200 }}
+                    />
                     <label className="btn sm">
                       Avatar
-                      <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setTmpFile(e.target.files?.[0] ?? null)} />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: "none" }}
+                        onChange={(e) => setTmpFile(e.target.files?.[0] ?? null)}
+                      />
                     </label>
                   </div>
                 ) : (
@@ -534,7 +739,10 @@ function LocalProfiles({
                     <div style={{ fontWeight: 800, whiteSpace: "nowrap", textAlign: "left" }}>
                       <a
                         href={`#/stats?pid=${p.id}`}
-                        onClick={(e) => { e.preventDefault(); location.hash = `#/stats?pid=${p.id}`; }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          location.hash = `#/stats?pid=${p.id}`;
+                        }}
                         onMouseEnter={() => warmup(p.id)}
                         style={{ color: "#f0b12a", textDecoration: "none" }}
                         title="Voir les statistiques"
@@ -542,6 +750,8 @@ function LocalProfiles({
                         {p.name || "—"}
                       </a>
                     </div>
+
+                    {/* ruban doré — responsive */}
                     <div style={{ marginTop: 6 }}>
                       <GoldMiniStats profileId={p.id} />
                     </div>
@@ -550,16 +760,34 @@ function LocalProfiles({
               </div>
             </div>
 
-            <div className="col" style={{ gap: 6, display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 96 }}>
+            {/* droite: actions */}
+            <div
+              className="col"
+              style={{
+                gap: 6,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-end",
+                minWidth: 96,
+              }}
+            >
               {isEdit ? (
                 <>
-                  <button className="btn ok sm" onClick={() => saveEdit(p.id)}>Enregistrer</button>
-                  <button className="btn sm" onClick={() => setEditing(null)}>Annuler</button>
+                  <button className="btn ok sm" onClick={() => saveEdit(p.id)}>
+                    Enregistrer
+                  </button>
+                  <button className="btn sm" onClick={() => setEditing(null)}>
+                    Annuler
+                  </button>
                 </>
               ) : (
                 <>
-                  <button className="btn sm" onClick={() => startEdit(p)}>Éditer</button>
-                  <button className="btn danger sm" onClick={() => onDelete(p.id)}>Suppr.</button>
+                  <button className="btn sm" onClick={() => startEdit(p)}>
+                    Éditer
+                  </button>
+                  <button className="btn danger sm" onClick={() => onDelete(p.id)}>
+                    Suppr.
+                  </button>
                 </>
               )}
             </div>
@@ -588,25 +816,83 @@ function EditInline({
   const [avatarUrl, setAvatarUrl] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (file) { const reader = new FileReader(); reader.onload = () => setAvatarUrl(String(reader.result)); reader.readAsDataURL(file); }
-    else setAvatarUrl(null);
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => setAvatarUrl(String(reader.result));
+      reader.readAsDataURL(file);
+    } else {
+      setAvatarUrl(null);
+    }
   }, [file]);
 
-  if (!edit) return (<button className="btn sm" onClick={() => setEdit(true)} title="Éditer le profil">ÉDITER</button>);
+  if (!edit) {
+    return (
+      <button className="btn sm" onClick={() => setEdit(true)} title="Éditer le profil">
+        ÉDITER
+      </button>
+    );
+  }
 
   return (
     <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
-      <label style={{ width: 56, height: 56, borderRadius: "50%", overflow: "hidden", border: "2px solid rgba(240,177,42,.4)", cursor: "pointer", display: "grid", placeItems: "center", background: "#111118", position: "relative" }}>
-        <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        <img src={avatarUrl ?? ""} alt="avatar" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: avatarUrl ? 1 : 0.2 }} />
-        {!avatarUrl && <span style={{ position: "absolute", color: "#999", fontSize: 12, bottom: 6 }}>Cliquer</span>}
+      <label
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: "50%",
+          overflow: "hidden",
+          border: "2px solid rgba(240,177,42,.4)",
+          cursor: "pointer",
+          display: "grid",
+          placeItems: "center",
+          background: "#111118",
+          position: "relative",
+        }}
+      >
+        <input
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        />
+        <img
+          src={avatarUrl ?? ""}
+          alt="avatar"
+          style={{ width: "100%", height: "100%", objectFit: "cover", opacity: avatarUrl ? 1 : 0.2 }}
+        />
+        {!avatarUrl && (
+          <span style={{ position: "absolute", color: "#999", fontSize: 12, bottom: 6 }}>Cliquer</span>
+        )}
       </label>
 
       <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ width: compact ? 160 : 200 }} />
 
-      <button className="btn ok sm" onClick={() => { onSave(name, file); setEdit(false); setFile(null); setAvatarUrl(null); }}>Enregistrer</button>
-      <button className="btn sm" onClick={() => { setEdit(false); setFile(null); setAvatarUrl(null); }}>Annuler</button>
-      {onDisconnect && <button className="btn danger sm" onClick={onDisconnect}>QUITTER</button>}
+      <button
+        className="btn ok sm"
+        onClick={() => {
+          onSave(name, file);
+          setEdit(false);
+          setFile(null);
+          setAvatarUrl(null);
+        }}
+      >
+        Enregistrer
+      </button>
+      <button
+        className="btn sm"
+        onClick={() => {
+          setEdit(false);
+          setFile(null);
+          setAvatarUrl(null);
+        }}
+      >
+        Annuler
+      </button>
+      {onDisconnect && (
+        <button className="btn danger sm" onClick={onDisconnect}>
+          QUITTER
+        </button>
+      )}
     </div>
   );
 }
@@ -621,9 +907,13 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
       try {
         const s = await getBasicProfileStats(profileId);
         if (!cancelled) setStats(s);
-      } catch { if (!cancelled) setStats(null); }
+      } catch {
+        if (!cancelled) setStats(null);
+      }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [profileId]);
 
   const avg3 = stats?.avg3 ?? 0;
@@ -641,8 +931,28 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
   const pillW = "clamp(58px, 17vw, 78px)";
 
   return (
-    <div style={{ borderRadius: 10, padding: "5px 6px", boxSizing: "border-box", background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))", border: "1px solid rgba(240,177,42,.25)", boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)", width: "100%", maxWidth: "100%", overflow: "hidden" }}>
-      <div style={{ display: "flex", flexWrap: "nowrap", alignItems: "stretch", gap: 0, width: "100%" }}>
+    <div
+      style={{
+        borderRadius: 10,
+        padding: "5px 6px",
+        boxSizing: "border-box",
+        background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
+        border: "1px solid rgba(240,177,42,.25)",
+        boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
+        width: "100%",
+        maxWidth: "100%",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "nowrap",
+          alignItems: "stretch",
+          gap: 0,
+          width: "100%",
+        }}
+      >
         <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="Best" value={String(best)} width={pillW} />
@@ -663,26 +973,82 @@ function GoldSep() {
   );
 }
 
-function GoldStatItem({ label, value, width }: { label: string; value: string; width: string; }) {
+function GoldStatItem({
+  label,
+  value,
+  width,
+}: {
+  label: string;
+  value: string;
+  width: string;
+}) {
   return (
-    <div style={{ width, minWidth: 0, display: "grid", gap: 1, textAlign: "center", paddingInline: 2, fontVariantNumeric: "tabular-nums" }}>
-      <span style={{ fontSize: "clamp(8px, 1.6vw, 9.5px)", color: "rgba(255,255,255,.66)", lineHeight: 1.05, whiteSpace: "nowrap" }}>{label}</span>
-      <span style={{ fontWeight: 800, letterSpacing: 0.1, color: "#f0b12a", textShadow: "0 0 4px rgba(240,177,42,.16)", fontSize: "clamp(9.5px, 2.4vw, 12px)", lineHeight: 1.05, whiteSpace: "nowrap" }}>{value}</span>
+    <div
+      style={{
+        width,
+        minWidth: 0,
+        display: "grid",
+        gap: 1,
+        textAlign: "center",
+        paddingInline: 2,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      <span
+        style={{
+          fontSize: "clamp(8px, 1.6vw, 9.5px)",
+          color: "rgba(255,255,255,.66)",
+          lineHeight: 1.05,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontWeight: 800,
+          letterSpacing: 0.1,
+          color: "#f0b12a",
+          textShadow: "0 0 4px rgba(240,177,42,.16)",
+          fontSize: "clamp(9.5px, 2.4vw, 12px)",
+          lineHeight: 1.05,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }
 
 function StatusDot({ kind }: { kind: "online" | "away" | "offline" }) {
   const color = kind === "online" ? "#1fb46a" : kind === "away" ? "#f0b12a" : "#777";
-  return <span style={{ width: 10, height: 10, borderRadius: 999, background: color, boxShadow: `0 0 10px ${color}`, display: "inline-block" }} />;
+  return (
+    <span
+      style={{
+        width: 10,
+        height: 10,
+        borderRadius: 999,
+        background: color,
+        boxShadow: `0 0 10px ${color}`,
+        display: "inline-block",
+      }}
+    />
+  );
 }
 
 /* ================================
    Utils
 ================================ */
-function fmt(n: number) { return (Math.round((n ?? 0) * 10) / 10).toFixed(1); }
+function fmt(n: number) {
+  return (Math.round((n ?? 0) * 10) / 10).toFixed(1);
+}
 function read(f: File) {
-  return new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
+  return new Promise<string>((res) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.readAsDataURL(f);
+  });
 }
 async function warmProfileStats(
   id: string,
