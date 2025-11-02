@@ -511,7 +511,7 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
                       >
                         <ProfileStarRing
                           anchorSize={MEDALLION}
-                          gapPx={5}
+                          gapPx={2}
                           starSize={STAR}
                           stepDeg={10}
                           avg3d={f.stats?.avg3 ?? 0} // si Friend ne possède pas de stats, l’anneau ne s’affiche pas (0)
@@ -700,7 +700,7 @@ function LocalProfiles({
                 >
                   <ProfileStarRing
                     anchorSize={MEDALLION}
-                    gapPx={5}
+                    gapPx={2}
                     starSize={STAR}
                     stepDeg={10}
                     avg3d={s?.avg3 ?? 0} // ✅ brute, pour afficher demi-étoiles

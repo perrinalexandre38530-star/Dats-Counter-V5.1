@@ -1,190 +1,162 @@
 // ============================================
 // src/components/ProfileStarRing.tsx
-// Couronne d’étoiles — dégradé jaune→rouge + violet final
-// - 1★ / 10 pts (1..9 = dégradé jaune→rouge, 10 = violet clair)
-// - ½★ aux seuils : 15/25/35/45/55/65/75/85/95
-// - >100 : +1★ violette chaque +20 (120/140/160/180)
-// - Centré à 12h, gapPx pour coller au médaillon
+// Couronne d’étoiles autour du médaillon
+// - Paliers couleur: 1-5 jaune, 6-7 orange, 8-9 rouge, 10+ violet
+// - Demi-étoiles (15/25/.../95) avec la teinte de l’étoile suivante
+// - Étoiles orientées tangentiellement à l’arc, centrées à 12h
+// - gapPx < 0 pour coller au bord du médaillon
 // ============================================
-
 import React from "react";
 
 type Props = {
-  anchorSize: number;     // diamètre du médaillon
-  avg3d?: number;         // moyenne 0..180
-  starSize?: number;      // taille d’une étoile (px)
-  gapPx?: number;         // distance depuis le bord du médaillon (px)
-  stepDeg?: number;       // écart angulaire entre étoiles (°)
-  rotationDeg?: number;   // rotation globale (°)
-  animateGlow?: boolean;  // légère pulsation
+  anchorSize: number;      // diamètre réel du médaillon (avatar + bord)
+  starSize?: number;       // px
+  gapPx?: number;          // décalage radial (px) — négatif = plus près
+  avg3d?: number;          // moyenne 3-darts
+  centerDeg?: number;      // centre du faisceau (deg) — -90 = 12h
+  stepDeg?: number;        // écart angulaire entre étoiles
+  rotationDeg?: number;    // offset global (deg)
+  onlyLit?: boolean;       // n’afficher que les étoiles “allumées”
 };
 
-type StarEntry = { color: string; half?: boolean };
+/* ---------- Palette stricte par paliers ---------- */
+const COL_YELLOW = "#FFD84A"; // jaune doré
+const COL_ORANGE = "#FF8A2E"; // orange
+const COL_RED    = "#FF4A4A"; // rouge
+const COL_VIOLET = "#D86CFF"; // violet clair
 
-/* --- Dégradé continu jaune → orange → rouge (1..9) + violet clair (10) --- */
-const STAR_COLORS = [
-  "#FFE873", // 1 jaune clair
-  "#FFD95C", // 2 jaune
-  "#FFC945", // 3 doré
-  "#FFB733", // 4 or/ambre
-  "#FFA22E", // 5 orange clair
-  "#FF8A2F", // 6 orange soutenu
-  "#FF6A3B", // 7 rouge-orangé
-  "#FF504A", // 8 rouge
-  "#FF3860", // 9 rouge vif
-  "#D07CFF", // 10 violet clair
-];
+function colorForRank(rank1: number): string {
+  if (rank1 >= 10) return COL_VIOLET;
+  if (rank1 >= 8)  return COL_RED;
+  if (rank1 >= 6)  return COL_ORANGE;
+  return COL_YELLOW; // 1..5
+}
 
-/* --- Étoile SVG --- */
-function Star({
+/* ---------- Étoiles pleines / demi ---------- */
+function StarSVG({
   size,
-  color,
-  half,
-  animate,
-}: {
-  size: number;
-  color: string;
-  half?: boolean;
-  animate?: boolean;
-}) {
-  const cls = animate ? "psr-pulse" : undefined;
-  const path =
-    "M50 5 L61 36 L94 38 L68 57 L77 88 L50 71 L23 88 L32 57 L6 38 L39 36 Z";
-
+  fill,
+  rotationDeg = 0,
+}: { size: number; fill: string; rotationDeg?: number }) {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 100 100"
-      className={cls}
-      style={{ filter: "url(#psrGlow)" }}
+      style={{ transform: `rotate(${rotationDeg}deg)` }}
     >
-      <defs>
-        <filter id="psrGlow">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="1.4" result="b" />
-          <feMerge>
-            <feMergeNode in="b" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-        <clipPath id="halfClip">
-          <rect x="0" y="0" width="50" height="100" />
-        </clipPath>
-      </defs>
-      {half ? (
-        <>
-          <path d={path} fill="rgba(255,255,255,0.15)" />
-          <g clipPath="url(#halfClip)">
-            <path d={path} fill={color} />
-          </g>
-        </>
-      ) : (
-        <path d={path} fill={color} />
-      )}
+      <path
+        d="M50 5 L61 36 L94 38 L68 57 L77 88 L50 71 L23 88 L32 57 L6 38 L39 36 Z"
+        fill={fill}
+      />
     </svg>
   );
 }
 
-/* --- Composant principal --- */
+function HalfStar({
+  size,
+  color,
+  rotationDeg = 0,
+}: { size: number; color: string; rotationDeg?: number }) {
+  const id = React.useId();
+  const empty = "rgba(255,255,255,0.18)";
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      style={{ transform: `rotate(${rotationDeg}deg)` }}
+    >
+      <defs>
+        <clipPath id={id}>
+          {/* moitié gauche remplie */}
+          <rect x="0" y="0" width="50" height="100" />
+        </clipPath>
+      </defs>
+      <path
+        d="M50 5 L61 36 L94 38 L68 57 L77 88 L50 71 L23 88 L32 57 L6 38 L39 36 Z"
+        fill={empty}
+      />
+      <path
+        d="M50 5 L61 36 L94 38 L68 57 L77 88 L50 71 L23 88 L32 57 L6 38 L39 36 Z"
+        fill={color}
+        clipPath={`url(#${id})`}
+      />
+    </svg>
+  );
+}
+
+/* ---------- Couronne ---------- */
 export default function ProfileStarRing({
   anchorSize,
-  avg3d = 0,
   starSize = 14,
-  gapPx = -3,     // collé par défaut
-  stepDeg = 10,   // resserré
+  gapPx = -2,
+  avg3d = 0,
+  centerDeg = -90,   // 12h
+  stepDeg = 10,
   rotationDeg = 0,
-  animateGlow = false,
+  onlyLit = true,
 }: Props) {
-  const score = Math.max(0, Math.min(180, Math.round(avg3d)));
+  const clamped = Math.max(0, Math.min(180, avg3d));
+  const full = Math.floor(clamped / 10);     // 0..18
+  const rest = Math.floor(clamped % 10);     // 0..9
+  const hasHalf = rest >= 5 && full < 10;    // demi seulement < 100
+  const litCount = onlyLit ? full + (hasHalf ? 1 : 0) : 10;
 
-  // 1★ / 10 pts
-  const fullUnder100 = Math.min(10, Math.floor(Math.min(score, 100) / 10));
-  const hasHalf = score < 100 && score >= 15 && score % 10 === 5;
-
-  // +1★ violette toutes les 20 au-dessus de 100
-  const extraViolets = score > 100 ? Math.floor((Math.min(score, 180) - 100) / 20) : 0;
-
-  const entries: StarEntry[] = [];
-
-  // Pleines 1..fullUnder100
-  for (let i = 1; i <= fullUnder100; i++) {
-    entries.push({ color: STAR_COLORS[i - 1] || STAR_COLORS[STAR_COLORS.length - 1] });
-  }
-
-  // Demi (couleur du palier suivant)
-  if (hasHalf) {
-    const pos = fullUnder100 + 1;
-    entries.push({ color: STAR_COLORS[pos - 1] || STAR_COLORS[STAR_COLORS.length - 1], half: true });
-  }
-
-  // Si score >100 : compléter les 10 premières pleines avant les extras
-  if (score > 100 && fullUnder100 < 10) {
-    for (let i = fullUnder100 + 1; i <= 10; i++) {
-      entries.push({ color: STAR_COLORS[i - 1] });
-    }
-  }
-
-  // Étoiles violettes supplémentaires
-  for (let i = 0; i < extraViolets; i++) {
-    entries.push({ color: STAR_COLORS[9] });
-  }
-
-  const count = entries.length;
-  if (count === 0) return null;
-
-  // Rayon centre→étoile
+  // Rayon centre→étoile (tangence parfaite)
   const r = anchorSize / 2 + gapPx + starSize / 2;
-  const halfSpread = (count - 1) * (stepDeg / 2);
 
-  function pol2cart(angleDeg: number) {
-    const a = ((angleDeg + rotationDeg) * Math.PI) / 180;
-    return { x: Math.sin(a) * r, y: -Math.cos(a) * r };
-  }
+  // Angles centrés à 12h
+  const spread = litCount > 1 ? stepDeg * (litCount - 1) : 0;
+  const start = centerDeg - spread / 2;
 
-  return (
-    <div style={{ position: "absolute", inset: 0, overflow: "visible", pointerEvents: "none" }}>
+  const nodes: React.ReactNode[] = [];
+
+  for (let i = 0; i < litCount; i++) {
+    const angle = start + i * stepDeg;
+    const a = ((angle + rotationDeg) * Math.PI) / 180;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+
+    // Orientation tangentielle (perpendiculaire au rayon)
+    const tangentDeg = angle + 90;
+
+    // Couleur: rang 1-based (½ étoile = couleur de l’étoile suivante)
+    const rank1 = Math.min(i + 1, 10);
+    const color = colorForRank(rank1);
+
+    const isHalf = hasHalf && i === litCount - 1 && full < 10;
+
+    nodes.push(
       <div
+        key={i}
         style={{
           position: "absolute",
-          left: "50%",
-          top: "50%",
+          left: `calc(50% + ${x}px)`,
+          top: `calc(50% + ${y}px)`,
           transform: "translate(-50%, -50%)",
         }}
       >
-        {entries.map((e, i) => {
-          const ang = -halfSpread + i * stepDeg; // centré à 12h
-          const { x, y } = pol2cart(ang);
-          return (
-            <div
-              key={i}
-              style={{
-                position: "absolute",
-                left: x - starSize / 2,
-                top: y - starSize / 2,
-              }}
-            >
-              <Star
-                size={starSize}
-                color={e.color}
-                half={e.half}
-                animate={animateGlow}
-              />
-            </div>
-          );
-        })}
+        {isHalf ? (
+          <HalfStar size={starSize} color={color} rotationDeg={tangentDeg} />
+        ) : (
+          <StarSVG size={starSize} fill={color} rotationDeg={tangentDeg} />
+        )}
       </div>
+    );
+  }
 
-      <style>{`
-        @keyframes psr-pulse-kf {
-          0%   { transform: scale(1); opacity: 1; }
-          50%  { transform: scale(1.08); opacity: .92; }
-          100% { transform: scale(1); opacity: 1; }
-        }
-        .psr-pulse {
-          animation: psr-pulse-kf 2.6s ease-in-out infinite;
-          transform-origin: 50% 50%;
-        }
-      `}</style>
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: "absolute",
+        inset: 0,
+        overflow: "visible",
+        pointerEvents: "none",
+      }}
+    >
+      {nodes}
     </div>
   );
 }
