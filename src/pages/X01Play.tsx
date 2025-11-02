@@ -47,9 +47,22 @@ type RankItem = { id: string; name: string; score: number };
 
 const NAV_HEIGHT = 64;
 // ↓ ancien: 360
-const KEYPAD_HEIGHT = 300;
+const KEYPAD_HEIGHT = 260;
 // mise à l’échelle visuelle du clavier (sans toucher au composant)
-const KEYPAD_SCALE = 0.92;
+const KEYPAD_SCALE = 0.88;
+
+/* ====== Compaction UI (header + liste joueurs) ====== */
+const HEADER_SCALE = 0.94;     // 1 = taille actuelle ; <1 = plus compact
+const AVATAR_SIZE = 108;       // avatar joueur actif (était ~120)
+const MINI_CARD_HEIGHT = 86;   // mini-card sous avatar (était ~108)
+const MINI_CARD_WIDTH = 180;   // largeur mini-card sous avatar
+const HEADER_OUTER_PADDING = 12;
+
+const PLAYER_ROW_AVATAR = 36;  // avatar lignes joueurs (était 40)
+const PLAYER_ROW_PAD_Y = 8;    // padding vertical d’une ligne (était 10)
+const PLAYER_ROW_GAP = 10;     // gap horizontal dans la ligne (était 12)
+const PLAYERS_BLOCK_PADDING = 10; // padding autour du bloc joueurs (était 12)
+const PLAYERS_LIST_MAX_H_VH = 32; // hauteur max visible (scroll) (était ~38)
 
 /* ---------------------------------------------
    Helpers commit Fin de manche (compat Legacy/New)
@@ -1100,23 +1113,11 @@ export default function X01Play({
     start: number;
     scoresByPlayer: Record<string, number>;
     statePlayers: EnginePlayer[];
-    liveRanking: RankItem[];      // 👈 on garde le mini-classement
+    liveRanking: RankItem[];
     curDarts: number;
     curM3D: string;
-    bestVisit: number;            // 👈 meilleure volée (bestVisitByPlayer[currentId])
   }) {
-    const {
-      currentPlayer,
-      currentAvatar,
-      currentRemaining,
-      currentThrow,
-      doubleOut,
-      liveRanking,
-      curDarts,
-      curM3D,
-      bestVisit,
-    } = props;
-  
+    const { currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking, curDarts, curM3D } = props;
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
     const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
@@ -1127,29 +1128,30 @@ export default function X01Play({
           position: "sticky",
           top: 0,
           zIndex: 40,
+          transform: `scale(${HEADER_SCALE})`,
+          transformOrigin: "top center",
           background:
             "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.10), transparent 55%), linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.8))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 18,
-          padding: 14,
+          padding: HEADER_OUTER_PADDING,
           boxShadow: "0 10px 30px rgba(0,0,0,.35)",
-          marginBottom: 12,
+          marginBottom: 10,
         }}
       >
-        {/* 2 colonnes : Avatar (+nom + mini-stats) | Centre (score + volée + checkout + mini-classement) */}
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
-          {/* Colonne gauche : médaillon + nom + mini-stats (sans titre) */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+        {/* Grille : Avatar(+mini-stats) | Centre (nom+score+volée+mini-classement) */}
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
+          {/* Colonne gauche : Avatar + Mini-Stats dessous (épuré) */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
             <div
               style={{
-                width: 110,              // 👈 légèrement plus petit
-                height: 110,
+                width: AVATAR_SIZE,
+                height: AVATAR_SIZE,
                 borderRadius: "50%",
                 overflow: "hidden",
                 background: "linear-gradient(180deg, #1b1b1f, #111114)",
-                /* 👇 anneau translucide au lieu du bord blanc */
-                boxShadow: "0 0 0 6px rgba(255,255,255,.08) inset, 0 0 24px rgba(255,195,26,.15)",
-                border: "1px solid rgba(255,255,255,.06)",
+                border: "1px solid rgba(255,255,255,.08)",
+                boxShadow: "inset 0 0 0 6px rgba(255,255,255,.04)", // anneau translucide
               }}
             >
               {currentAvatar ? (
@@ -1171,22 +1173,15 @@ export default function X01Play({
               )}
             </div>
   
-            {/* Nom SOUS l’avatar */}
-            <div style={{ fontWeight: 900, fontSize: 16, color: "#ffcf57", letterSpacing: 0.3 }}>
+            {/* Nom sous avatar */}
+            <div style={{ fontWeight: 900, fontSize: 18, color: "#ffcf57", letterSpacing: 0.3 }}>
               {currentPlayer?.name ?? "—"}
             </div>
   
-            {/* Mini-stats épuré — sans titre ; “Score restant” -> “Meilleure volée” */}
-            <div
-              style={{
-                ...miniCard,
-                width: 190,
-                height: "auto",
-                padding: 10,
-              }}
-            >
-              <div style={{ ...miniText }}>
-                <div>Meilleure volée : <b>{bestVisit}</b></div>   {/* 👈 utilise la valeur passée */}
+            {/* Mini-Stats épuré (sans titre) */}
+            <div style={{ ...miniCard, width: MINI_CARD_WIDTH, height: MINI_CARD_HEIGHT, padding: 8 }}>
+              <div style={miniText}>
+                <div>Meilleure volée : <b>{Math.max(0, (currentPlayer ? (bestVisitByPlayer[currentPlayer.id] || 0) : 0))}</b></div>
                 <div>Moy/3D : <b>{curM3D}</b></div>
                 <div>Darts jouées : <b>{curDarts}</b></div>
                 <div>Volée : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
@@ -1194,23 +1189,24 @@ export default function X01Play({
             </div>
           </div>
   
-          {/* Colonne centrale : score, volée, checkout, mini-classement (sans titre, max 3 lignes visibles) */}
-          <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Centre : score + volée + checkout + mini-classement (sans titre) */}
+          <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
             <div
               style={{
-                fontSize: 76,
+                fontSize: 72,
                 lineHeight: 1,
                 fontWeight: 900,
                 color: "#ffcf57",
                 textShadow: "0 4px 20px rgba(255,195,26,.25)",
                 letterSpacing: 0.5,
+                marginTop: 2,
               }}
             >
               {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
             </div>
   
-            {/* Pastilles de volée */}
-            <div style={{ marginTop: 4, display: "flex", gap: 8, justifyContent: "center" }}>
+            {/* Pastilles volée */}
+            <div style={{ marginTop: 2, display: "flex", gap: 6, justifyContent: "center" }}>
               {[0, 1, 2].map((i: number) => {
                 const d = currentThrow[i];
                 const afterNow = currentRemaining - currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
@@ -1223,10 +1219,10 @@ export default function X01Play({
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      minWidth: 48,
-                      height: 36,
-                      padding: "0 14px",
-                      borderRadius: 12,
+                      minWidth: 44,
+                      height: 32,
+                      padding: "0 12px",
+                      borderRadius: 10,
                       border: st.border as string,
                       background: st.background as string,
                       color: st.color as string,
@@ -1244,31 +1240,28 @@ export default function X01Play({
               const only = suggestCheckout(predictedAfter, doubleOut, dartsLeft)[0];
               if (!only || currentThrow.length >= 3) return null;
               return (
-                <div style={{ marginTop: 6, display: "flex", justifyContent: "center" }}>
+                <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
                   <div
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      padding: 8,
-                      borderRadius: 14,
+                      padding: 6,
+                      borderRadius: 12,
                       border: "1px solid rgba(255,255,255,.08)",
-                      background:
-                        "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
-                      boxShadow: "0 12px 28px rgba(0,0,0,.4)",
-                      minWidth: 200,
-                      maxWidth: 580,
+                      background: "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
+                      minWidth: 180,
+                      maxWidth: 520,
                     }}
                   >
                     <span
                       style={{
-                        padding: "6px 10px",
-                        borderRadius: 10,
+                        padding: "4px 8px",
+                        borderRadius: 8,
                         border: "1px solid rgba(255,187,51,.4)",
                         background: "rgba(255,187,51,.12)",
                         color: "#ffc63a",
                         fontWeight: 900,
-                        boxShadow: "0 0 18px rgba(255,195,26,.2)",
                         whiteSpace: "nowrap",
                       }}
                     >
@@ -1279,24 +1272,11 @@ export default function X01Play({
               );
             })()}
   
-            {/* Mini-classement — SANS titre, 3 lignes visibles max + scroll */}
-            <div
-              style={{
-                ...miniCard,
-                alignSelf: "center",
-                width: "min(320px, 100%)",
-                height: "auto",
-                padding: 8,
-              }}
-            >
-              <div
-                style={{
-                  maxHeight: 3 * 24 + 12,         // ≈ hauteur de 3 lignes (approx)
-                  overflowY: liveRanking.length > 3 ? "auto" : "visible",
-                }}
-              >
+            {/* Mini-Classement sous la volée (sans titre) ; limité visuellement à 3 lignes + scroll si > 3 */}
+            <div style={{ ...miniCard, alignSelf: "center", width: "min(320px, 100%)", height: "auto", padding: 6 }}>
+              <div style={{ maxHeight: 3 * 28, overflow: liveRanking.length > 3 ? "auto" : "visible" as any }}>
                 {liveRanking.map((r, i) => (
-                  <div key={r.id} style={miniRankRow}>
+                  <div key={r.id} style={{ ...miniRankRow, marginBottom: 3 }}>
                     <div style={miniRankName}>{i + 1}. {r.name}</div>
                     <div style={r.score === 0 ? miniRankScoreFini : miniRankScore}>
                       {r.score === 0 ? "FINI" : r.score}
@@ -1312,6 +1292,8 @@ export default function X01Play({
   }
 
   function PlayersBlock(props: {
+    playersOpen: boolean;
+    setPlayersOpen: (b: boolean) => void;
     statePlayers: EnginePlayer[];
     profileById: Record<string, Profile>;
     lastByPlayer: Record<string, UIDart[]>;
@@ -1322,6 +1304,8 @@ export default function X01Play({
     scoresByPlayer: Record<string, number>;
   }) {
     const {
+      playersOpen,
+      setPlayersOpen,
       statePlayers,
       profileById,
       lastByPlayer,
@@ -1338,112 +1322,130 @@ export default function X01Play({
           background: "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 18,
-          padding: 10,
-          marginBottom: 12,
+          padding: PLAYERS_BLOCK_PADDING,
+          marginBottom: 10,
           boxShadow: "0 10px 30px rgba(0,0,0,.35)",
         }}
       >
-        {/* Liste directe — pas d’en-tête “Joueurs” */}
-        <div style={{ maxHeight: "40vh", overflow: "auto", paddingRight: 4 }}>
-          {statePlayers.map((p) => {
-            const prof = profileById[p.id];
-            const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
-            const last = lastByPlayer[p.id] || [];
-            const bust = !!lastBustByPlayer[p.id];
-            const dCount = dartsCount[p.id] || 0;
-            const pSum = pointsSum[p.id] || 0;
-            const a3d = dCount > 0 ? ((pSum / dCount) * 3).toFixed(2) : "0.00";
+        {/* En-tête supprimé → on garde seulement un petit bouton disclosure à droite pour gagner de la place */}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={() => setPlayersOpen(!playersOpen)}
+            aria-label="Afficher / masquer les joueurs"
+            style={{
+              width: 28, height: 28, borderRadius: 8,
+              border: "1px solid rgba(255,255,255,.12)", background: "transparent",
+              color: "#e8e8ec", cursor: "pointer"
+            }}
+          >
+            {playersOpen ? "▴" : "▾"}
+          </button>
+        </div>
   
-            return (
-              <div
-                key={p.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "10px 12px",
-                  borderRadius: 12,
-                  background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
-                  border: "1px solid rgba(255,255,255,.07)",
-                  marginBottom: 8,
-                }}
-              >
+        {playersOpen && (
+          <div style={{ marginTop: 8, maxHeight: `${PLAYERS_LIST_MAX_H_VH}vh`, overflow: "auto", paddingRight: 4 }}>
+            {statePlayers.map((p) => {
+              const prof = profileById[p.id];
+              const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
+              const last = lastByPlayer[p.id] || [];
+              const bust = !!lastBustByPlayer[p.id];
+              const dCount = dartsCount[p.id] || 0;
+              const pSum = pointsSum[p.id] || 0;
+              const a3d = dCount > 0 ? ((pSum / dCount) * 3).toFixed(2) : "0.00";
+  
+              return (
                 <div
+                  key={p.id}
                   style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: "50%",
-                    overflow: "hidden",
-                    background: "rgba(255,255,255,.06)",
-                    flex: "0 0 auto",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: PLAYER_ROW_GAP,
+                    padding: `${PLAYER_ROW_PAD_Y}px 10px`,
+                    borderRadius: 12,
+                    background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                    border: "1px solid rgba(255,255,255,.07)",
+                    marginBottom: 6,
                   }}
                 >
-                  {avatarSrc ? (
-                    <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "#999",
-                        fontWeight: 700,
-                      }}
-                    >
-                      ?
-                    </div>
-                  )}
-                </div>
-  
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
-                    {last.length > 0 ? (
-                      last.map((d, i) => {
-                        const st = chipStyle(d, bust);
-                        return (
-                          <span
-                            key={i}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              minWidth: 38,
-                              height: 26,
-                              padding: "0 10px",
-                              borderRadius: 10,
-                              border: st.border as string,
-                              background: st.background as string,
-                              color: st.color as string,
-                              fontWeight: 800,
-                            }}
-                          >
-                            {fmt(d)}
-                          </span>
-                        );
-                      })
+                  <div
+                    style={{
+                      width: PLAYER_ROW_AVATAR,
+                      height: PLAYER_ROW_AVATAR,
+                      borderRadius: "50%",
+                      overflow: "hidden",
+                      background: "rgba(255,255,255,.06)",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    {avatarSrc ? (
+                      <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     ) : (
-                      <span style={{ color: "#aab" }}>Dernière volée : —</span>
+                      <div
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#999",
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}
+                      >
+                        ?
+                      </div>
                     )}
                   </div>
   
-                  <div style={{ marginTop: 4, fontSize: 12, color: "#cfd1d7" }}>
-                    Set 1 • Leg 1 • Darts: {dCount} • Moy/3D: {a3d}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
+                      {last.length > 0 ? (
+                        last.map((d, i) => {
+                          const st = chipStyle(d, bust);
+                          return (
+                            <span
+                              key={i}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                minWidth: 34,
+                                height: 24,
+                                padding: "0 8px",
+                                borderRadius: 8,
+                                border: st.border as string,
+                                background: st.background as string,
+                                color: st.color as string,
+                                fontWeight: 800,
+                                fontSize: 12,
+                              }}
+                            >
+                              {fmt(d)}
+                            </span>
+                          );
+                        })
+                      ) : (
+                        <span style={{ color: "#aab", fontSize: 12 }}>Dernière volée : —</span>
+                      )}
+                    </div>
+  
+                    <div style={{ marginTop: 3, fontSize: 11.5, color: "#cfd1d7" }}>
+                      Set 1 • Leg 1 • Darts: {dCount} • Moy/3D: {a3d}
+                    </div>
+                  </div>
+  
+                  <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
+                    {scoresByPlayer[p.id] ?? start}
                   </div>
                 </div>
-  
-                <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
-                  {scoresByPlayer[p.id] ?? start}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
-  }
+  }  
 
   function ContinueModal({ endNow, continueAfterFirst }: { endNow: () => void; continueAfterFirst: () => void }) {
     return (
@@ -1560,25 +1562,25 @@ export default function X01Play({
 
 /* ===== Styles mini-cards & ranking ===== */
 const miniCard: React.CSSProperties = {
-  width: "clamp(160px, 22vw, 190px)",
-  height: 108,
-  padding: 8,
+  width: "clamp(150px, 22vw, 190px)",
+  height: 86,
+  padding: 6,
   borderRadius: 12,
   background: "linear-gradient(180deg, rgba(22,22,26,.96), rgba(14,14,16,.98))",
   border: "1px solid rgba(255,255,255,.10)",
   boxShadow: "0 10px 22px rgba(0,0,0,.35)",
 };
-const miniTitle: React.CSSProperties = { fontWeight: 900, fontSize: 12, color: "#ffcf57", marginBottom: 4 };
-const miniText: React.CSSProperties = { fontSize: 12, color: "#d9dbe3", lineHeight: 1.35 };
+const miniTitle: React.CSSProperties = { fontWeight: 900, fontSize: 11.5, color: "#ffcf57", marginBottom: 2 };
+const miniText: React.CSSProperties = { fontSize: 12, color: "#d9dbe3", lineHeight: 1.25 };
 const miniRankRow: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
-  padding: "4px 6px",
+  padding: "3px 6px",
   borderRadius: 6,
   background: "rgba(255,255,255,.04)",
-  marginBottom: 4,
+  marginBottom: 3,
   fontSize: 11,
-  lineHeight: 1.2,
+  lineHeight: 1.15,
 };
 const miniRankName: React.CSSProperties = { fontWeight: 700, color: "#ffcf57" };
 const miniRankScore: React.CSSProperties = { fontWeight: 800, color: "#ffcf57" };
