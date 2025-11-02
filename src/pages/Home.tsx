@@ -4,10 +4,12 @@
 // - Médaillon avatar centré & zoom anti-bords (cover + scale)
 // - Layout mobile sans scroll + variante ultra-compacte
 // - Grille 2 colonnes sur tablette
+// - [NEW] Couronne d’étoiles EXTERNE autour du médaillon (ProfileStarRing)
 // ============================================
 
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
+import ProfileStarRing from "../components/ProfileStarRing";
 import type { Store, Profile } from "../lib/types";
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
 
@@ -208,7 +210,7 @@ function useBasicStats(pid: string | null) {
   return pid ? cache[pid] : undefined;
 }
 
-/* ---------- Carte dorée du profil connecté ---------- */
+/* ---------- Carte dorée du profil connecté + RING ÉTOILES ---------- */
 function ActiveProfileCard({
   profile,
   status,
@@ -229,7 +231,8 @@ function ActiveProfileCard({
     legsWon: isNum(basicStats?.legsWon) ? basicStats!.legsWon : (isNum(legacy.legsWon) ? legacy.legsWon : 0),
   };
 
-  const avg3 = (Math.round((s.avg3 || 0) * 10) / 10).toFixed(1);
+  const avg3n = isNum(s.avg3) ? s.avg3 : 0;
+  const avg3 = (Math.round(avg3n * 10) / 10).toFixed(1);
   const best = String(s.bestVisit || 0);
   const co = String(s.highestCheckout || 0);
   const wr = s.legsPlayed > 0 ? Math.round((s.legsWon / s.legsPlayed) * 100) : null;
@@ -239,6 +242,11 @@ function ActiveProfileCard({
   const statusColor =
     status === "away" ? "var(--gold-2)" : status === "offline" ? "#9aa" : "var(--ok)";
 
+  // === Paramètres ring externe (alignés avec Profiles.tsx) ===
+  const AVA = getCssNumber("--avatar-size", 92); // diamètre avatar réel en px
+  const PAD = 10;         // marge externe pour laisser respirer les étoiles
+  const STAR = 14;        // taille d’une étoile
+
   return (
     <div
       className="card"
@@ -246,8 +254,7 @@ function ActiveProfileCard({
         width: "100%",
         maxWidth: 420,
         margin: "0 auto",
-        background:
-          "linear-gradient(180deg, rgba(240,177,42,.25), rgba(240,177,42,.10))",
+        background: "linear-gradient(180deg, rgba(240,177,42,.25), rgba(240,177,42,.10))",
         borderColor: "rgba(240,177,42,.45)",
         borderWidth: 1,
         borderStyle: "solid",
@@ -262,57 +269,88 @@ function ActiveProfileCard({
         gap: 6,
       }}
     >
-      {/* Médaillon : image brute centrée + zoom anti-bords */}
+      {/* ===== Médaillon + RING EXTERNE (non-clippé) ===== */}
       <div
         style={{
           position: "relative",
           width: "var(--avatar-size)",
           height: "var(--avatar-size)",
-          borderRadius: "50%",
           marginBottom: 6,
-          border: "2px solid rgba(240,177,42,.5)",
-          boxShadow: "0 0 20px rgba(240,177,42,.25)",
-          overflow: "hidden",
-          background: "#000",
         }}
-        aria-label="avatar-medallion"
       >
-        { (profile as any).avatarDataUrl ? (
-          <img
-            src={(profile as any).avatarDataUrl}
-            alt={profile.name}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              objectPosition: "50% 50%",
-              transform: `translate(var(--avatar-dx), var(--avatar-dy)) scale(var(--avatar-scale))`,
-              transformOrigin: "50% 50%",
-              display: "block",
-              background: "transparent",
-            }}
-            draggable={false}
+        {/* RING d’étoiles placé DANS le wrapper (pas clipé par overflow) */}
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: -(PAD + STAR / 2),
+            top: -(PAD + STAR / 2),
+            width: AVA + (PAD + STAR / 2) * 2,
+            height: AVA + (PAD + STAR / 2) * 2,
+            pointerEvents: "none",
+          }}
+        >
+          <ProfileStarRing
+            anchorSize={AVA}
+            gapPx={-2}          // proche du bord du médaillon
+            starSize={STAR}
+            stepDeg={10}
+            rotationDeg={0}
+            avg3d={avg3n}
           />
-        ) : (
-          <ProfileAvatar
-            size={parseInt(getComputedStyle(document.documentElement)
-              .getPropertyValue("--avatar-size").replace("px","")) || 92}
-            dataUrl={undefined}
-            label={profile.name[0]?.toUpperCase()}
-          />
-        )}
-        {/* anneau décoratif interne */}
+        </div>
+
+        {/* CERCLE AVATAR — c’est lui qui clippe l’image */}
         <div
           style={{
             position: "absolute",
             inset: 0,
             borderRadius: "50%",
-            boxShadow: "inset 0 0 0 3px rgba(240,177,42,.25)",
-            pointerEvents: "none",
+            border: "2px solid rgba(240,177,42,.5)",
+            boxShadow: "0 0 20px rgba(240,177,42,.25)",
+            overflow: "hidden",
+            background: "#000",
           }}
-        />
+          aria-label="avatar-medallion"
+        >
+          {(profile as any).avatarDataUrl ? (
+            <img
+              src={(profile as any).avatarDataUrl}
+              alt={profile.name}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                objectPosition: "50% 50%",
+                transform: `translate(var(--avatar-dx), var(--avatar-dy)) scale(var(--avatar-scale))`,
+                transformOrigin: "50% 50%",
+                display: "block",
+                background: "transparent",
+              }}
+              draggable={false}
+            />
+          ) : (
+            <ProfileAvatar
+              size={AVA}
+              dataUrl={undefined}
+              label={profile.name[0]?.toUpperCase()}
+              showStars={false}
+            />
+          )}
+
+          {/* anneau décoratif interne */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: "50%",
+              boxShadow: "inset 0 0 0 3px rgba(240,177,42,.25)",
+              pointerEvents: "none",
+            }}
+          />
+        </div>
       </div>
 
       {/* Nom cliquable */}
@@ -517,4 +555,13 @@ function Icon({
 /* ---------- Utils ---------- */
 function isNum(v: any): v is number {
   return typeof v === "number" && !Number.isNaN(v);
+}
+function getCssNumber(varName: string, fallback = 0): number {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    const n = parseFloat(v.replace("px", ""));
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
 }
