@@ -1,18 +1,11 @@
 // ============================================
 // src/pages/X01Setup.tsx
-// Paramètres X01 (pré-match)
-// - Score de départ (301 / 501 / 701 / 901)
-// - Mode de sortie (Simple / Double / Master)
-// - Mode d'entrée (Simple / Double / Master)
-// - Format du match : Sets à gagner + Legs par set
-// - Ordre aléatoire
-// - Sélecteur de joueurs (sélectionnés au-dessus, médaillons uniquement)
-// - Boutons Annuler / Lancer (en haut du panneau de sélection)
-// - Persistance: localStorage("settings_x01")
-// - Nouvelles options persistées : officialMatch, voiceOn, sfxOn
+// Paramètres X01 (pré-match) + Couronne d’étoiles autour des avatars
 // ============================================
 import React from "react";
 import type { Profile } from "../lib/types";
+import ProfileStarRing from "../components/ProfileStarRing";
+import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
 
 type SetupProps = {
   profiles: Profile[];
@@ -104,6 +97,27 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+/** Charge un map {profileId -> BasicProfileStats} pour afficher les rings */
+function useAvgMap(profiles: Profile[]) {
+  const [map, setMap] = React.useState<Record<string, BasicProfileStats | undefined>>({});
+  React.useEffect(() => {
+    let cancel = false;
+    (async () => {
+      // On charge progressivement pour éviter un burst.
+      for (const p of profiles) {
+        if (cancel || map[p.id]) continue;
+        try {
+          const s = await getBasicProfileStats(p.id);
+          if (!cancel) setMap((m) => (m[p.id] ? m : { ...m, [p.id]: s }));
+        } catch { /* ignore */ }
+      }
+    })();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles.map(p => p.id).join("|")]);
+  return map;
+}
+
 export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
   const saved = React.useMemo(loadSettings, []);
   const [start, setStart] = React.useState<301 | 501 | 701 | 901>(saved.start ?? 501);
@@ -113,7 +127,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
   const [legsPerSet, setLegsPerSet] = React.useState<number>(saved.legsPerSet ?? 1);
   const [randomOrder, setRandomOrder] = React.useState<boolean>(saved.randomOrder ?? false);
 
-  // nouvelles options persistées (ne changent pas la signature onStart)
+  // nouvelles options persistées
   const [officialMatch, setOfficialMatch] = React.useState<boolean>(saved.officialMatch ?? false);
   const [voiceOn, setVoiceOn] = React.useState<boolean>(saved.voiceOn ?? true);
   const [sfxOn, setSfxOn] = React.useState<boolean>(saved.sfxOn ?? true);
@@ -121,17 +135,13 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
   const [available, setAvailable] = React.useState<Profile[]>(() => profiles.slice());
   const [selected, setSelected] = React.useState<Profile[]>([]);
 
+  // Map des stats pour les rings (disponibles + sélectionnés)
+  const avgMap = useAvgMap([...available, ...selected]);
+
   React.useEffect(() => {
     saveSettings({
-      start,
-      outMode,
-      inMode,
-      setsToWin,
-      legsPerSet,
-      randomOrder,
-      officialMatch,
-      voiceOn,
-      sfxOn,
+      start, outMode, inMode, setsToWin, legsPerSet, randomOrder,
+      officialMatch, voiceOn, sfxOn,
     });
   }, [start, outMode, inMode, setsToWin, legsPerSet, randomOrder, officialMatch, voiceOn, sfxOn]);
 
@@ -147,42 +157,27 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
   function handleStart() {
     if (!selected.length) return;
     const order = randomOrder ? shuffle(selected) : selected.slice();
+    const doubleOut = outMode !== "simple";
+    const doubleIn  = inMode  !== "simple";
 
-    // mapping provisoire pour compat moteur :
-    const doubleOut = outMode !== "simple";   // master -> true tant que triple-out non géré
-    const doubleIn  = inMode  !== "simple";   // master -> true tant que master-in non géré
-
-    // ✅ Garde-fou global lisible par X01Play (et autres écrans)
     const payloadForPlay = {
       playerIds: order.map((p) => p.id),
-      start,
-      outMode,
-      inMode,
-      doubleOut,
-      doubleIn,
-      setsToWin,
-      legsPerSet,
-      randomOrder,
+      start, outMode, inMode, doubleOut, doubleIn,
+      setsToWin, legsPerSet, randomOrder,
       officialMatch,
       finishPolicy: "firstToZero" as const,
       audio: { voiceOn, sfxOn },
     };
     (window as any).__x01StartParams = payloadForPlay;
 
-    // ✅ Appel onStart selon la signature existante
     onStart({
       playerIds: payloadForPlay.playerIds,
-      start,
-      outMode,
-      inMode,
-      doubleOut,
-      doubleIn,
-      setsToWin,
-      legsPerSet,
-      randomOrder,
+      start, outMode, inMode, doubleOut, doubleIn,
+      setsToWin, legsPerSet, randomOrder,
     });
   }
 
+  // -------------------- Rendu --------------------
   return (
     <div style={{ maxWidth: 520, margin: "0 auto", padding: 12 }}>
       {/* Bandeau titre + Quitter */}
@@ -210,9 +205,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
         <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Score de départ</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
           {SCORE_CHOICES.map((s) => (
-            <button key={s} onClick={() => setStart(s)} style={pill(start === s)}>
-              {s}
-            </button>
+            <button key={s} onClick={() => setStart(s)} style={pill(start === s)}>{s}</button>
           ))}
         </div>
 
@@ -245,9 +238,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
             <div style={{ fontWeight: 800, marginBottom: 6, color: "#e9e9ef" }}>Sets à gagner</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {SET_CHOICES.map((n) => (
-                <button key={n} onClick={() => setSetsToWin(n)} style={pill(setsToWin === n)}>
-                  {n}
-                </button>
+                <button key={n} onClick={() => setSetsToWin(n)} style={pill(setsToWin === n)}>{n}</button>
               ))}
             </div>
             <div style={{ ...sub, marginTop: 6 }}>1 = pas de sets (match en un seul set)</div>
@@ -257,9 +248,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
             <div style={{ fontWeight: 800, marginBottom: 6, color: "#e9e9ef" }}>Legs à gagner (par set)</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {LEG_CHOICES.map((n) => (
-                <button key={n} onClick={() => setLegsPerSet(n)} style={pill(legsPerSet === n)}>
-                  {n}
-                </button>
+                <button key={n} onClick={() => setLegsPerSet(n)} style={pill(legsPerSet === n)}>{n}</button>
               ))}
             </div>
             <div style={{ ...sub, marginTop: 6 }}>1 = pas de best-of dans un set</div>
@@ -342,87 +331,152 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
             minHeight: 56,
           }}
         >
-          {selected.map((p) => (
-            <div key={p.id} style={{ textAlign: "center" }}>
-              <div
-                title={p.name}
-                onClick={() => removePlayer(p)}
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: "50%",
-                  overflow: "hidden",
-                  border: "2px solid rgba(255,200,80,.45)",
-                  boxShadow: "0 6px 18px rgba(255,195,26,.2)",
-                  margin: "0 auto",
-                  cursor: "pointer",
-                  background: "rgba(255,255,255,.06)",
-                }}
-              >
-                {p.avatarDataUrl ? (
-                  <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                ) : (
-                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 800 }}>?</div>
-                )}
+          {selected.map((p) => {
+            const AVA = 56;         // diamètre avatar sélectionné
+            const STAR = 9;         // taille des étoiles
+            const PAD = 6;          // respiration externe
+            const avg3 = avgMap[p.id]?.avg3 ?? 0;
+            return (
+              <div key={p.id} style={{ textAlign: "center" }}>
+                {/* Wrapper non-clipant pour le RING */}
+                <div style={{ position: "relative", width: AVA, height: AVA, margin: "0 auto" }}>
+                  {/* Couronne EXTERNE (en dehors du disque clipé) */}
+                  <div
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      left: -(PAD + STAR / 2),
+                      top:  -(PAD + STAR / 2),
+                      width:  AVA + (PAD + STAR / 2) * 2,
+                      height: AVA + (PAD + STAR / 2) * 2,
+                      pointerEvents: "none",
+                      overflow: "visible",
+                    }}
+                  >
+                    <ProfileStarRing
+                      anchorSize={AVA}
+                      gapPx={6}           // ⭐ positif => autour du bord
+                      starSize={STAR}
+                      stepDeg={10}
+                      rotationDeg={0}
+                      avg3d={avg3}
+                    />
+                  </div>
+
+                  {/* Médaillon clipé */}
+                  <div
+                    title={p.name}
+                    onClick={() => removePlayer(p)}
+                    style={{
+                      width: AVA,
+                      height: AVA,
+                      borderRadius: "50%",
+                      overflow: "hidden",            // clip seulement l’image
+                      border: "2px solid rgba(255,200,80,.45)",
+                      boxShadow: "0 6px 18px rgba(255,195,26,.2)",
+                      cursor: "pointer",
+                      background: "rgba(255,255,255,.06)",
+                    }}
+                  >
+                    {p.avatarDataUrl ? (
+                      <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 800 }}>?</div>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {!selected.length && <div style={{ color: "#aab", fontSize: 12 }}>Aucun joueur sélectionné</div>}
         </div>
 
         {/* Joueurs disponibles */}
         <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Joueurs disponibles</div>
         <div>
-          {available.map((p) => (
-            <div
-              key={p.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-                padding: "10px 12px",
-                borderRadius: 12,
-                background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
-                border: "1px solid rgba(255,255,255,.07)",
-                marginBottom: 6,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: "50%",
-                    overflow: "hidden",
-                    background: "rgba(255,255,255,.06)",
-                    flex: "0 0 auto",
-                  }}
-                >
-                  {p.avatarDataUrl ? (
-                    <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 700, fontSize: 12 }}>?</div>
-                  )}
-                </div>
-                <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
-              </div>
-              <button
-                onClick={() => addPlayer(p)}
+          {available.map((p) => {
+            const AVA = 38;    // avatar liste
+            const STAR = 8;
+            const PAD = 6;
+            const avg3 = avgMap[p.id]?.avg3 ?? 0;
+            return (
+              <div
+                key={p.id}
                 style={{
-                  padding: "6px 10px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,200,80,.35)",
-                  background: "transparent",
-                  color: "#ffcf57",
-                  fontWeight: 800,
-                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                  border: "1px solid rgba(255,255,255,.07)",
+                  marginBottom: 6,
                 }}
               >
-                Ajouter
-              </button>
-            </div>
-          ))}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {/* Wrapper non-clipant */}
+                  <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
+                    <div
+                      aria-hidden
+                      style={{
+                        position: "absolute",
+                        left: -(PAD + STAR / 2),
+                        top:  -(PAD + STAR / 2),
+                        width:  AVA + (PAD + STAR / 2) * 2,
+                        height: AVA + (PAD + STAR / 2) * 2,
+                        pointerEvents: "none",
+                        overflow: "visible",
+                      }}
+                    >
+                      <ProfileStarRing
+                        anchorSize={AVA}
+                        gapPx={6}
+                        starSize={STAR}
+                        stepDeg={10}
+                        rotationDeg={0}
+                        avg3d={avg3}
+                      />
+                    </div>
+
+                    {/* Médaillon clipé */}
+                    <div
+                      style={{
+                        width: AVA,
+                        height: AVA,
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        background: "rgba(255,255,255,.06)",
+                      }}
+                    >
+                      {p.avatarDataUrl ? (
+                        <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 700, fontSize: 12 }}>?</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
+                </div>
+
+                <button
+                  onClick={() => addPlayer(p)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,200,80,.35)",
+                    background: "transparent",
+                    color: "#ffcf57",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Ajouter
+                </button>
+              </div>
+            );
+          })}
           {!available.length && <div style={{ color: "#aab", fontSize: 12 }}>Tous les joueurs sont sélectionnés</div>}
         </div>
       </div>
