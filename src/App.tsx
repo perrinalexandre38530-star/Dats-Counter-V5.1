@@ -227,41 +227,46 @@ export default function App() {
     update((s) => ({ ...s, profiles: fn(s.profiles ?? []) }));
   }
 
-  // Fin de partie → normalise, pousse en mémoire + persistant, puis ouvre l’historique
+  // Fin de partie → normalise, dédupe, persiste, route vers Historique
   function pushHistory(m: MatchRecord) {
-    // Normalisation : on garantit id, timestamps, kind, status
     const now = Date.now();
     const id =
       (m as any)?.id ||
       (m as any)?.matchId ||
       `x01-${now}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const players =
+      (m as any)?.players ??
+      (m as any)?.payload?.players ??
+      [];
+
+    const summary =
+      (m as any)?.summary ??
+      (m as any)?.payload?.summary ??
+      null;
+
     const saved: any = {
       id,
       kind: (m as any)?.kind || "x01",
       status: (m as any)?.status || "finished",
-      players:
-        (m as any)?.players ||
-        (m as any)?.payload?.players ||
-        [], // ok si vide : l’UI affiche "—"
-      winnerId:
-        (m as any)?.winnerId ||
-        (m as any)?.payload?.winnerId ||
-        null,
+      players,
+      winnerId: (m as any)?.winnerId || (m as any)?.payload?.winnerId || null,
       createdAt: (m as any)?.createdAt || now,
       updatedAt: now,
-      payload: m, // on garde tout brut ici
+      summary,
+      payload: m, // brut (History.upsert pourra compacter si besoin)
     };
 
-    // 1) mémoire (Store)
-    update((s) => ({ ...s, history: [...(s.history ?? []), saved] }));
+    // 1) mémoire (dédupe sur id)
+    update((s) => {
+      const list = [...(s.history ?? [])];
+      const i = list.findIndex((r: any) => r.id === saved.id);
+      if (i >= 0) list[i] = saved; else list.unshift(saved);
+      return { ...s, history: list };
+    });
 
-    // 2) persistant (lib/history) — best effort
-    try {
-      (History as any)?.upsert?.(saved);
-    } catch (e) {
-      console.warn("[App] History.upsert failed:", e);
-    }
+    // 2) persistant (best effort)
+    try { (History as any)?.upsert?.(saved); } catch (e) { console.warn("[App] History.upsert failed:", e); }
 
     // 3) route
     go("stats", { tab: "history" });
@@ -279,23 +284,27 @@ export default function App() {
     );
   } else {
     switch (tab) {
-      case "home":
-        page = <Home store={store} update={update} go={(t: any) => go(t)} onConnect={() => go("profiles")} />;
+      case "home": {
+        page = <Home store={store} update={update} go={(t: any, p?: any) => go(t, p)} onConnect={() => go("profiles")} />;
         break;
+      }
 
-      case "games":
+      case "games": {
         page = <Games setTab={(t: any) => go(t)} />;
         break;
+      }
 
-      case "profiles":
+      case "profiles": {
         page = <Profiles store={store} update={update} setProfiles={setProfiles} />;
         break;
+      }
 
-      case "friends":
+      case "friends": {
         page = <FriendsPage />;
         break;
+      }
 
-      case "settings":
+      case "settings": {
         page = (
           <SettingsPage
             value={store.settings}
@@ -303,30 +312,26 @@ export default function App() {
           />
         );
         break;
+      }
 
-      case "stats":
+      case "stats": {
         page = (
           <StatsHub
             go={go}
             tab={(routeParams?.tab as any) ?? "history"}
-            memHistory={store.history ?? []}   // ← fallback mémoire
+            memHistory={store.history ?? []}
           />
         );
         break;
+      }
 
       case "statsDetail": {
-        // robuste: récup + fallback, dates sûres, joueurs via payload
-        const getRec = (id?: string) => {
-          if (!id) return null as any;
-          const api: any = History || {};
-          try {
-            return api.get?.(id) ?? api.getX01?.(id) ?? null;
-          } catch {
-            return null;
-          }
-        };
-
-        const rec: any = getRec(routeParams?.matchId);
+        // robuste: accepte un record complet passé par StatsHub,
+        // sinon tente History.get, sinon fallback store.history
+        const rec: any =
+          routeParams?.rec ||
+          (History as any)?.get?.(routeParams?.matchId) ||
+          (store.history || []).find((r: any) => r.id === routeParams?.matchId);
 
         const toArr = (v: any) => (Array.isArray(v) ? v : []);
         const N = (v: any, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -366,7 +371,7 @@ export default function App() {
       }
 
       // ---------- X01 ----------
-      case "x01setup":
+      case "x01setup": {
         page = (
           <X01Setup
             profiles={store.profiles ?? []}
@@ -383,8 +388,9 @@ export default function App() {
           />
         );
         break;
+      }
 
-      case "x01":
+      case "x01": {
         if (!x01Config && !routeParams?.resumeId) {
           page = (
             <div className="container" style={{ padding: 16 }}>
@@ -399,20 +405,22 @@ export default function App() {
               playerIds={x01Config?.playerIds ?? []}
               start={x01Config?.start ?? store.settings.defaultX01}
               doubleOut={x01Config?.doubleOut ?? store.settings.doubleOut}
-              params={routeParams}               // ← transporte { resumeId } pour la reprise
+              params={routeParams}               // transporte { resumeId } pour la reprise
               onFinish={(m) => pushHistory(m)}
               onExit={() => go("x01setup")}
             />
           );
         }
         break;
+      }
 
-      case "x01_end":
+      case "x01_end": {
         page = <X01End go={go} params={routeParams} />;
         break;
+      }
 
       // ---------- Autres jeux ----------
-      case "cricket":
+      case "cricket": {
         page = (
           <LobbyPick
             title="Lobby — Cricket"
@@ -425,19 +433,24 @@ export default function App() {
             }}
           />
         );
+        // Placeholder:
         page = <CricketPlay playerIds={[]} onFinish={pushHistory} />;
         break;
+      }
 
-      case "killer":
+      case "killer": {
         page = <KillerPlay playerIds={[]} onFinish={pushHistory} />;
         break;
+      }
 
-      case "shanghai":
+      case "shanghai": {
         page = <ShanghaiPlay playerIds={[]} onFinish={pushHistory} />;
         break;
+      }
 
-      default:
+      default: {
         page = <Home store={store} update={update} go={(t: any, p?: any) => go(t, p)} onConnect={() => go("profiles")} />;
+      }
     }
   }
 

@@ -1,96 +1,148 @@
 // ============================================
-// src/lib/statsBridge.ts — pont Stats unifiées
-// - getBasicProfileStats(pid)
-// - mergeLegToBasics(legStats | legacy)
+// src/lib/statsBridge.ts — "stats de base" unifiées
 // ============================================
-
-export type BasicProfileStats = {
-  avg3: number;           // moyenne /3 cumulée (pondérée par visites)
-  bestVisit: number;
-  highestCheckout: number;
-  legsPlayed: number;
-  legsWon: number;
-  // interne pour pondérer avg3
-  _sumVisits?: number;
-  _sumAvg3xVisits?: number;
+type BasicLine = {
+  games: number;        // parties jouées
+  wins: number;         // parties gagnées
+  legs: number;         // manches jouées (compteur)
+  darts: number;        // fléchettes totales
+  points: number;       // points marqués (estim.)
+  bestVisit: number;    // meilleure volée
+  bestCheckout: number; // meilleur checkout
 };
 
-const KEY = "dc-stats-basics-v1";
+type BasicStore = Record<string, BasicLine>; // key = playerId
 
-type MapByPid = Record<string, BasicProfileStats>;
+const KEY = "dc5:basic-stats";
 
-function loadMap(): MapByPid {
+function readStore(): BasicStore {
   try {
     const raw = localStorage.getItem(KEY);
-    const m = raw ? JSON.parse(raw) : {};
-    return m && typeof m === "object" ? m : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
   }
 }
-function saveMap(m: MapByPid) {
-  localStorage.setItem(KEY, JSON.stringify(m));
+function writeStore(s: BasicStore) {
+  try { localStorage.setItem(KEY, JSON.stringify(s)); } catch {}
 }
 
-export async function getBasicProfileStats(pid: string): Promise<BasicProfileStats> {
-  const m = loadMap();
-  return m[pid] ?? { avg3: 0, bestVisit: 0, highestCheckout: 0, legsPlayed: 0, legsWon: 0 };
+/** Retourne la ligne de stats d’un joueur (avec défauts) */
+export function getBasicProfileStats(playerId: string) {
+  const s = readStore();
+  const line: BasicLine = s[playerId] ?? {
+    games: 0, wins: 0, legs: 0, darts: 0, points: 0, bestVisit: 0, bestCheckout: 0,
+  };
+
+  const avgPerDart = line.darts > 0 ? line.points / line.darts : 0;
+  const avg3 = avgPerDart * 3;
+  const winRate = line.games > 0 ? (line.wins / line.games) * 100 : 0;
+
+  return {
+    raw: line,
+    avg3: Number(avg3.toFixed(2)),
+    winRate: Number(winRate.toFixed(0)),
+    bestVisit: line.bestVisit,
+    bestCheckout: line.bestCheckout,
+    legs: line.legs,
+    games: line.games,
+  };
 }
 
-/** Accepte un LegStats *ou* un LegacyLegResult */
-export function mergeLegToBasics(leg: any) {
-  const m = loadMap();
+/** Réinitialise tout (utile en debug) */
+export function resetBasicStats() {
+  writeStore({});
+}
 
-  const isNew = !!(leg?.perPlayer && leg?.players && Array.isArray(leg.players));
-  const players: string[] = isNew ? leg.players : Object.keys(leg?.darts ?? {});
-  const winnerId: string | null =
-    isNew ? (leg.winnerId ?? null) : (leg.winnerId ?? null);
+/**
+ * Fusionne une manche FINIE (Leg) dans les "stats de base".
+ * Accepte au choix :
+ *  - un objet "legacy" { winnerId, darts, avg3, bestVisit, bestCheckout, ... }
+ *  - un objet riche { perPlayer, winnerId, players, ... } (statsOnce/computeLegStats)
+ */
+export function mergeLegToBasics(result: any) {
+  const store = readStore();
+
+  // ---- détecte le format
+  const isRich = !!result?.perPlayer && !!result?.players;
+  const players: string[] = isRich
+    ? (result.players || []).map((p: any) => p.id || p)
+    : Object.keys(result?.darts || {});
+
+  // winner
+  const winnerId: string | null = result?.winnerId ?? null;
 
   for (const pid of players) {
-    const cur = m[pid] ?? {
-      avg3: 0,
-      bestVisit: 0,
-      highestCheckout: 0,
-      legsPlayed: 0,
-      legsWon: 0,
-      _sumVisits: 0,
-      _sumAvg3xVisits: 0,
+    const cur: BasicLine = store[pid] ?? {
+      games: 0, wins: 0, legs: 0, darts: 0, points: 0, bestVisit: 0, bestCheckout: 0,
     };
 
-    // ——— extraire mesures pour ce joueur selon le schéma
-    let visits = 0;
-    let avg3 = 0;
-    let best = 0;
-    let highestCO = 0;
+    // incrément manche
+    cur.legs += 1;
 
-    if (isNew) {
-      const row = leg.perPlayer?.[pid];
-      visits = row?.visits ?? 0;
-      avg3 = row?.avg3 ?? 0;
-      best = row?.best ?? 0;
-      highestCO = row?.co?.highestCO ?? 0;
+    if (isRich) {
+      const pp = result.perPlayer?.[pid] || {};
+      cur.darts += Number(pp.dartsThrown || 0);
+      cur.points += Number(pp.pointsScored || 0);
+      cur.bestVisit = Math.max(cur.bestVisit, Number(pp.bestVisit || 0));
+      cur.bestCheckout = Math.max(cur.bestCheckout, Number(pp.highestCheckout || 0));
     } else {
-      visits = leg.visits?.[pid] ?? 0;
-      avg3 = leg.avg3?.[pid] ?? 0;
-      best = (leg.bestVisit?.[pid] ?? 0) as number;
-      highestCO = (leg.bestCheckout?.[pid] ?? 0) as number;
+      // legacy (reconstruit à partir de fields connus de ton overlay)
+      const darts = Number(result?.darts?.[pid] || 0);
+      const visits = Number(result?.visits?.[pid] || Math.ceil(darts / 3));
+      const avg3 = Number(result?.avg3?.[pid] || 0);
+      const points = Math.round(avg3 * visits);
+      const bestV = Number(result?.bestVisit?.[pid] || 0);
+      const bestCO = Number(result?.bestCheckout?.[pid] || 0);
+
+      cur.darts += darts;
+      cur.points += points;
+      cur.bestVisit = Math.max(cur.bestVisit, bestV);
+      cur.bestCheckout = Math.max(cur.bestCheckout, bestCO);
     }
 
-    // ——— cumul pondéré pour avg3
-    const sumV = (cur._sumVisits ?? 0) + (visits || 0);
-    const sumAxV = (cur._sumAvg3xVisits ?? 0) + (avg3 || 0) * (visits || 0);
-    const newAvg3 = sumV > 0 ? sumAxV / sumV : cur.avg3;
-
-    m[pid] = {
-      avg3: newAvg3 || 0,
-      bestVisit: Math.max(cur.bestVisit || 0, best || 0),
-      highestCheckout: Math.max(cur.highestCheckout || 0, highestCO || 0),
-      legsPlayed: (cur.legsPlayed || 0) + 1,
-      legsWon: (cur.legsWon || 0) + (winnerId && winnerId === pid ? 1 : 0),
-      _sumVisits: sumV,
-      _sumAvg3xVisits: sumAxV,
-    };
+    store[pid] = cur;
   }
 
-  saveMap(m);
+  // On compte la partie gagnée/perdue quand on détecte la dernière manche
+  // Ici: on considère chaque "manche commitée" comme une "game".
+  // Si tu veux: appelle mergeMatchToBasics pour le match complet.
+  for (const pid of players) {
+    const cur = store[pid];
+    cur.games += 1;
+    if (winnerId && pid === winnerId) cur.wins += 1;
+    store[pid] = cur;
+  }
+
+  writeStore(store);
+  return true;
+}
+
+/** Optionnel : fusionner un match complet pré-agrégé */
+export function mergeMatchToBasics(match: {
+  players: string[]; winnerId?: string | null;
+  dartsByPlayer?: Record<string, number>;
+  pointsByPlayer?: Record<string, number>;
+  bestVisitByPlayer?: Record<string, number>;
+  bestCheckoutByPlayer?: Record<string, number>;
+}) {
+  const store = readStore();
+
+  for (const pid of match.players) {
+    const cur: BasicLine = store[pid] ?? {
+      games: 0, wins: 0, legs: 0, darts: 0, points: 0, bestVisit: 0, bestCheckout: 0,
+    };
+    cur.games += 1;
+    if (match.winnerId && pid === match.winnerId) cur.wins += 1;
+    cur.darts += Number(match.dartsByPlayer?.[pid] || 0);
+    cur.points += Number(match.pointsByPlayer?.[pid] || 0);
+    cur.bestVisit = Math.max(cur.bestVisit, Number(match.bestVisitByPlayer?.[pid] || 0));
+    cur.bestCheckout = Math.max(cur.bestCheckout, Number(match.bestCheckoutByPlayer?.[pid] || 0));
+    store[pid] = cur;
+  }
+
+  writeStore(store);
+  return true;
 }

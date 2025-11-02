@@ -215,7 +215,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
             <select value={outMode} onChange={(e) => setOutMode(e.target.value as any)} style={selectStyle}>
               <option value="simple">Simple</option>
               <option value="double">Double</option>
-              <option value="master">Master (Triple)</option>
+              <option value="master">Master</option>
             </select>
           </div>
 
@@ -224,7 +224,7 @@ export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
             <select value={inMode} onChange={(e) => setInMode(e.target.value as any)} style={selectStyle}>
               <option value="simple">Simple</option>
               <option value="double">Double</option>
-              <option value="master">Master (Triple)</option>
+              <option value="master">Master</option>
             </select>
           </div>
         </div>

@@ -22,7 +22,7 @@ import {
 } from "recharts";
 
 import type { LegStats, PlayerId } from "../lib/stats";
-import { mergeLegToBasics } from "../lib/statsBridge";
+import { getBasicProfileStats } from "../lib/statsBridge";
 
 /* ---- Types légers (compat) ---- */
 type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };

@@ -195,3 +195,91 @@ body {
   min-height: 100dvh; /* dvh = hauteur écran réelle, utile sur mobile */
   overflow-x: hidden; /* évite les scroll horizontaux parasites */
 }
+
+:root{
+  --acc: #F6C256;         /* OR principal */
+  --acc-2:#F0B344;        /* OR chaud (icônes) */
+  --edge: rgba(255,255,255,.10);
+  --card: #141518;
+  --card2:#101114;
+  --chip:#1B1E24;
+  --text: #e9e9ee;
+  --muted:#b8bcc7;
+}
+
+.dc-card{
+  background: linear-gradient(180deg, rgba(20,21,24,.90), rgba(16,17,20,.90));
+  border:1px solid var(--edge);
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.35);
+  backdrop-filter: blur(8px);
+}
+
+.dc-tile{
+  background: linear-gradient(180deg, rgba(22,23,26,.92), rgba(18,19,22,.88));
+  border:1px solid var(--edge);
+  border-radius: 18px;
+  padding:16px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+}
+
+.dc-chip{
+  background: linear-gradient(180deg, rgba(27,30,36,.95), rgba(23,26,32,.95));
+  border:1px solid var(--edge);
+  border-radius: 12px;
+  color: var(--acc-2);
+}
+
+.dc-pill{
+  padding:8px 12px;
+  border-radius: 999px;
+  border:1px solid var(--edge);
+  background: rgba(255,255,255,0.02);
+  color:#e9e9ee;
+}
+.dc-pill:hover{ background: rgba(255,255,255,.05); }
+
+.dc-h1{ font-size:28px; font-weight:800; letter-spacing:-.2px; color:#fff; }
+.dc-sub{ font-size:13px; color:rgba(255,255,255,.70); }
+
+/* Graph axes/grille – or */
+.dc-axis { stroke: rgba(255,255,255,.28); }
+.dc-grid { stroke: rgba(255,255,255,.10); }
+.dc-line { stroke: var(--acc); }
+.dc-bar  { fill: var(--acc); }
+.dc-barEdge { stroke:#7A5A16; stroke-opacity:.35; fill:transparent; }
+.dc-xlab,.dc-ylab{ fill: rgba(255,255,255,.65); font-size:10px; }
+
+/* ===== Stats — thème verre dépoli OR (override fort) ===== */
+.stats-theme { --or:#F6C256; --bord:rgba(255,255,255,.08); --fond1:#111214; --fond2:#15161a; --axis:#2a2b2f; --grid:#242528; --txt:#e9e9ee; --mut:#b7bcc8; }
+
+.stats-theme .stats-card{
+  background:linear-gradient(180deg,rgba(17,18,20,.94),rgba(13,14,17,.92));
+  border:1px solid var(--bord); border-radius:20px; backdrop-filter:blur(10px);
+  box-shadow:0 10px 26px rgba(0,0,0,.35);
+}
+.stats-theme .stats-tile{
+  background:linear-gradient(180deg,rgba(21,22,26,.96),rgba(17,18,22,.94));
+  border:1px solid var(--bord); border-radius:20px; padding:16px;
+}
+.stats-theme .stats-pill{
+  padding:10px 14px; border-radius:999px; border:1px solid var(--bord);
+  color:var(--txt); background:rgba(255,255,255,.02);
+}
+.stats-theme .stats-pill:hover{ background:rgba(255,255,255,.05); }
+
+.stats-theme .stats-icon{
+  width:36px;height:36px;border-radius:12px;display:grid;place-items:center;
+  border:1px solid var(--bord); background:linear-gradient(180deg,#1b1d22,#171a1f); color:var(--or);
+}
+.stats-theme .stats-h1{ font-size:28px; font-weight:800; letter-spacing:-.2px; color:#fff; }
+.stats-theme .stats-sub{ font-size:13px; color:rgba(255,255,255,.7); }
+
+/* Graph look = screenshot mais OR */
+.stats-theme .axis { stroke: var(--axis); }
+.stats-theme .grid { stroke: var(--grid); }
+.stats-theme .line { stroke: var(--or); }
+.stats-theme .bar  { fill: var(--or); }
+.stats-theme .barEdge { stroke:#7A5A16; stroke-opacity:.35; fill:transparent; }
+.stats-theme .lab { fill: rgba(255,255,255,.65); font-size:10px; }
+

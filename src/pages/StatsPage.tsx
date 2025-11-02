@@ -2,6 +2,9 @@ import React from "react";
 import Section from "../components/Section";
 import type { Store } from "../lib/types";
 import { computeStats } from "../lib/stats";
+import React from "react";
+import StatsHub from "./StatsHub";
+export default function StatsPage() { return <StatsHub />; }
 
 export default function StatsPage({store}:{store:Store}){
   const [pid,setPid]=React.useState(store.profiles[0]?.id || "");

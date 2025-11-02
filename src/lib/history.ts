@@ -1,16 +1,9 @@
 // ============================================
-// src/lib/history.ts — SAFE (IndexedDB + OPFS)
-// Remplace totalement l’ancienne version localStorage
-// API conservée : list(), get(id), upsert(rec), clear()
+// src/lib/history.ts — Historique compact (localStorage)
+// API: list(), get(id), upsert(rec), remove(id), clear()
 // ============================================
 
-import { loadStore, saveStore } from "./storage";
-import { readJSON, writeJSON } from "./deviceStore"; // fallback OPFS
-import type { Store } from "./types";
-
-/* ---------- Types publics ---------- */
 export type PlayerLite = { id: string; name?: string; avatarDataUrl?: string | null };
-
 export type SavedMatch = {
   id: string;
   kind?: "x01" | "cricket" | string;
@@ -19,126 +12,97 @@ export type SavedMatch = {
   winnerId?: string | null;
   createdAt?: number;
   updatedAt?: number;
-  summary?: any;
+  // Résumé ultra-léger pour les listes
+  summary?: {
+    legs?: number;
+    darts?: number;
+    avg3ByPlayer?: Record<string, number>;
+    co?: number; // total checkouts du match
+  } | null;
+  // payload complet : on essaie de le garder petit; si trop gros on le coupe
   payload?: any;
 };
 
-/* ---------- Constantes ---------- */
-const OPFS_HISTORY_PATH = "history/history.json";
-const MAX_ITEMS = 500;
+const KEY = "dc-history-v1";
+const MAX_ROWS = 300;         // sécurité
+const MAX_PAYLOAD_LEN = 60_000; // ~60 Ko, évite les QuotaExceeded
 
-/* ---------- Helpers ---------- */
-function toArr<T = any>(v: any): T[] {
-  return Array.isArray(v) ? (v as T[]) : [];
+function safeParse<T>(raw: string | null, fb: T): T {
+  try { return raw ? (JSON.parse(raw) as T) : fb; } catch { return fb; }
 }
-function byUpdatedDesc(a: SavedMatch, b: SavedMatch) {
-  const ta = Number(a.updatedAt ?? a.createdAt ?? 0);
-  const tb = Number(b.updatedAt ?? b.createdAt ?? 0);
-  return tb - ta;
+function loadAll(): SavedMatch[] {
+  return safeParse<SavedMatch[]>(localStorage.getItem(KEY), []);
 }
+function saveAll(rows: SavedMatch[]) {
+  // Couper à MAX_ROWS (les plus récents en tête)
+  const trimmed = rows
+    .slice()
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    .slice(0, MAX_ROWS);
 
-/* ---------- Canal principal : IndexedDB (storage.ts) ---------- */
-async function readFromIDB(): Promise<SavedMatch[]> {
-  const s = (await loadStore<Store>()) || ({} as Store);
-  return toArr<SavedMatch>(s.history);
-}
-
-async function writeToIDB(list: SavedMatch[]) {
-  const s = (await loadStore<Store>()) || ({} as Store);
-  const next: Store = { ...(s as any), history: list } as Store;
-  await saveStore(next);
-}
-
-/* ---------- Fallback OPFS (deviceStore.ts) ---------- */
-async function readFromOPFS(): Promise<SavedMatch[]> {
+  // Dernière barrière anti-quota: si setItem échoue, on coupe encore par 20%
   try {
-    const v = await readJSON<SavedMatch[]>(OPFS_HISTORY_PATH);
-    return toArr(v);
+    localStorage.setItem(KEY, JSON.stringify(trimmed));
   } catch {
-    return [];
-  }
-}
-async function writeToOPFS(list: SavedMatch[]) {
-  try {
-    await writeJSON(OPFS_HISTORY_PATH, list);
-  } catch {
-    // ignore
+    const cut = Math.max(10, Math.floor(trimmed.length * 0.8));
+    localStorage.setItem(KEY, JSON.stringify(trimmed.slice(0, cut)));
   }
 }
 
-/* ---------- Implémentation publique ---------- */
-async function list(): Promise<SavedMatch[]> {
-  // 1) tente IndexedDB
+function compactPayload(p: any): any {
+  if (!p) return p;
+  const s = JSON.stringify(p);
+  if (s.length <= MAX_PAYLOAD_LEN) return p;
+  // On garde le strict minimum en fallback
   try {
-    const arr = await readFromIDB();
-    if (arr.length) return arr.sort(byUpdatedDesc);
-    // si vide, tente OPFS (peut contenir une ancienne copie)
-    const opfs = await readFromOPFS();
-    if (opfs.length) {
-      // replique dans IDB pour normaliser
-      await writeToIDB(opfs);
-      return opfs.sort(byUpdatedDesc);
-    }
-    return [];
+    return {
+      ...(p.kind ? { kind: p.kind } : {}),
+      ...(p.players ? { players: p.players } : {}),
+      ...(p.result ? { result: p.result } : {}),
+    };
   } catch {
-    // IDB KO → fallback pur OPFS
-    const opfs = await readFromOPFS();
-    return opfs.sort(byUpdatedDesc);
+    return undefined;
   }
 }
 
-async function get(id: string): Promise<SavedMatch | null> {
-  const all = await list();
-  return all.find((r) => r.id === id) ?? null;
-}
-
-async function upsert(rec: SavedMatch): Promise<void> {
-  const now = Date.now();
-  const fixed: SavedMatch = {
-    ...rec,
-    id: rec.id || (crypto.randomUUID?.() ?? String(now)),
-    createdAt: rec.createdAt ?? now,
-    updatedAt: now,
-  };
-
-  // 1) essaie IDB
-  try {
-    const arr = await readFromIDB();
-    const idx = arr.findIndex((r) => r.id === fixed.id);
-    if (idx >= 0) arr[idx] = { ...arr[idx], ...fixed, updatedAt: now };
-    else arr.unshift(fixed);
-
-    const trimmed = arr.sort(byUpdatedDesc).slice(0, MAX_ITEMS);
-    await writeToIDB(trimmed);
-    // miroir OPFS (best-effort)
-    writeToOPFS(trimmed).catch(() => {});
-    return;
-  } catch {
-    // 2) IDB KO → tout en OPFS
-    const arr = await readFromOPFS();
-    const idx = arr.findIndex((r) => r.id === fixed.id);
-    if (idx >= 0) arr[idx] = { ...arr[idx], ...fixed, updatedAt: now };
-    else arr.unshift(fixed);
-    const trimmed = arr.sort(byUpdatedDesc).slice(0, MAX_ITEMS);
-    await writeToOPFS(trimmed);
-  }
-}
-
-async function clear(): Promise<void> {
-  try {
-    await writeToIDB([]);
-  } catch {}
-  try {
-    await writeToOPFS([]);
-  } catch {}
-}
-
-/* ---------- Export ---------- */
 export const History = {
-  list,      // Promise<SavedMatch[]>
-  get,       // Promise<SavedMatch|null>
-  upsert,    // Promise<void>
-  clear,     // Promise<void>
+  list(): SavedMatch[] {
+    return loadAll();
+  },
+
+  get(id: string): SavedMatch | null {
+    return loadAll().find((r) => r.id === id) ?? null;
+  },
+
+  upsert(rec: SavedMatch): void {
+    if (!rec || !rec.id) return;
+    // Normalisation minimale
+    const now = Date.now();
+    const row: SavedMatch = {
+      id: rec.id,
+      kind: rec.kind ?? "x01",
+      status: rec.status ?? "finished",
+      players: Array.isArray(rec.players) ? rec.players : [],
+      winnerId: rec.winnerId ?? null,
+      createdAt: rec.createdAt ?? now,
+      updatedAt: rec.updatedAt ?? now,
+      summary: rec.summary ?? null,
+      payload: compactPayload(rec.payload),
+    };
+
+    const all = loadAll();
+    const i = all.findIndex((r) => r.id === row.id);
+    if (i >= 0) all[i] = row; else all.unshift(row);
+    saveAll(all);
+  },
+
+  remove(id: string) {
+    saveAll(loadAll().filter((r) => r.id !== id));
+  },
+
+  clear() {
+    localStorage.removeItem(KEY);
+  },
 };
 
 export default History;
