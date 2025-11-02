@@ -1,6 +1,7 @@
 // ============================================
 // src/components/Keypad.tsx
 // Keypad stylé — boutons ANNULER & VALIDER en or
+// (rangée "Flèche 1 / 2 / 3" supprimée pour gagner de la place)
 // ============================================
 import React from "react";
 import type { Dart as UIDart } from "../lib/types";
@@ -46,7 +47,7 @@ const wrapCard: React.CSSProperties = {
   background: "linear-gradient(180deg, rgba(22,22,23,.85), rgba(12,12,14,.95))",
   border: "1px solid rgba(255,255,255,.08)",
   borderRadius: 18,
-  padding: 14,
+  padding: 14, // padding un poil réduit car la barre flèches est supprimée
   boxShadow: "0 10px 30px rgba(0,0,0,.35)",
   userSelect: "none",
 };
@@ -124,30 +125,7 @@ export default function Keypad({
 
   return (
     <div style={wrapCard}>
-      {/* Barre Flèche 1 / 2 / 3 */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
-        {[0, 1, 2].map((i) => {
-          const filled = Boolean(currentThrow[i]);
-          return (
-            <div
-              key={i}
-              style={{
-                ...btnGhost,
-                height: 48,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: filled
-                  ? "linear-gradient(180deg, rgba(152,117,40,.5), rgba(83,65,22,.35))"
-                  : btnGhost.background,
-              }}
-            >
-              <span style={{ opacity: 0.9 }}>{`Flèche ${i + 1}`}</span>
-              <span style={{ marginLeft: 6 }}>{filled ? "✓" : "• •"}</span>
-            </div>
-          );
-        })}
-      </div>
+      {/* (Barre Flèche 1/2/3 supprimée) */}
 
       {/* DOUBLE / TRIPLE / ANNULER */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
