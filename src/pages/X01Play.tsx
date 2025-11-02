@@ -980,6 +980,7 @@ export default function X01Play({
         liveRanking={liveRanking}
         curDarts={curDarts}
         curM3D={curM3D}
+        bestVisit={bestVisitByPlayer[currentPlayer?.id ?? ""] ?? 0}   // 👈 AJOUT
       />
 
       {/* Bloc joueurs (accordéon) */}
@@ -1099,15 +1100,27 @@ export default function X01Play({
     start: number;
     scoresByPlayer: Record<string, number>;
     statePlayers: EnginePlayer[];
-    liveRanking: RankItem[];
+    liveRanking: RankItem[];      // 👈 on garde le mini-classement
     curDarts: number;
     curM3D: string;
+    bestVisit: number;            // 👈 meilleure volée (bestVisitByPlayer[currentId])
   }) {
-    const { currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking, curDarts, curM3D } = props;
+    const {
+      currentPlayer,
+      currentAvatar,
+      currentRemaining,
+      currentThrow,
+      doubleOut,
+      liveRanking,
+      curDarts,
+      curM3D,
+      bestVisit,
+    } = props;
+  
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
     const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
-
+  
     return (
       <div
         style={{
@@ -1123,18 +1136,20 @@ export default function X01Play({
           marginBottom: 12,
         }}
       >
-        {/* Deux colonnes : Avatar(+NOM+stats) | Centre (score/volée/checkout + classement) */}
+        {/* 2 colonnes : Avatar (+nom + mini-stats) | Centre (score + volée + checkout + mini-classement) */}
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
-          {/* Colonne gauche : Avatar + NOM + Mini-Stats en dessous */}
+          {/* Colonne gauche : médaillon + nom + mini-stats (sans titre) */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
             <div
               style={{
-                width: 120,
-                height: 120,
+                width: 110,              // 👈 légèrement plus petit
+                height: 110,
                 borderRadius: "50%",
                 overflow: "hidden",
                 background: "linear-gradient(180deg, #1b1b1f, #111114)",
-                border: "1px solid rgba(255,255,255,.08)",
+                /* 👇 anneau translucide au lieu du bord blanc */
+                boxShadow: "0 0 0 6px rgba(255,255,255,.08) inset, 0 0 24px rgba(255,195,26,.15)",
+                border: "1px solid rgba(255,255,255,.06)",
               }}
             >
               {currentAvatar ? (
@@ -1155,38 +1170,32 @@ export default function X01Play({
                 </div>
               )}
             </div>
-
-            {/* NOM sous l’avatar */}
-            <div
-              style={{
-                fontWeight: 900,
-                fontSize: 18,
-                color: "#ffcf57",
-                letterSpacing: 0.4,
-                textAlign: "center",
-                maxWidth: 140,
-                lineHeight: 1.05,
-              }}
-            >
+  
+            {/* Nom SOUS l’avatar */}
+            <div style={{ fontWeight: 900, fontSize: 16, color: "#ffcf57", letterSpacing: 0.3 }}>
               {currentPlayer?.name ?? "—"}
             </div>
-
-            {/* Mini-Stats sous avatar */}
-            <div style={{ ...miniCard, width: 190, height: "auto", padding: 10 }}>
-              <div style={miniTitle}>Stats</div>
-              <div style={miniText}>
-                <div>Score restant : <b>{currentRemaining}</b></div>
-                <div>Darts jouées : <b>{curDarts}</b></div>
+  
+            {/* Mini-stats épuré — sans titre ; “Score restant” -> “Meilleure volée” */}
+            <div
+              style={{
+                ...miniCard,
+                width: 190,
+                height: "auto",
+                padding: 10,
+              }}
+            >
+              <div style={{ ...miniText }}>
+                <div>Meilleure volée : <b>{bestVisit}</b></div>   {/* 👈 utilise la valeur passée */}
                 <div>Moy/3D : <b>{curM3D}</b></div>
-                <div>Volée en cours : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
+                <div>Darts jouées : <b>{curDarts}</b></div>
+                <div>Volée : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
               </div>
             </div>
           </div>
-
-          {/* Colonne centre : score + volée + checkout + (en dessous) classement */}
+  
+          {/* Colonne centrale : score, volée, checkout, mini-classement (sans titre, max 3 lignes visibles) */}
           <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-            {/* (Nom central supprimé pour gagner en hauteur) */}
-
             <div
               style={{
                 fontSize: 76,
@@ -1199,8 +1208,8 @@ export default function X01Play({
             >
               {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
             </div>
-
-            {/* Pastilles volée */}
+  
+            {/* Pastilles de volée */}
             <div style={{ marginTop: 4, display: "flex", gap: 8, justifyContent: "center" }}>
               {[0, 1, 2].map((i: number) => {
                 const d = currentThrow[i];
@@ -1229,7 +1238,7 @@ export default function X01Play({
                 );
               })}
             </div>
-
+  
             {/* Checkout centré */}
             {(() => {
               const only = suggestCheckout(predictedAfter, doubleOut, dartsLeft)[0];
@@ -1269,11 +1278,23 @@ export default function X01Play({
                 </div>
               );
             })()}
-
-            {/* Mini-Classement sous la volée */}
-            <div style={{ ...miniCard, alignSelf: "center", width: "min(320px, 100%)", height: "auto", padding: 8 }}>
-              <div style={miniTitle}>Classement</div>
-              <div>
+  
+            {/* Mini-classement — SANS titre, 3 lignes visibles max + scroll */}
+            <div
+              style={{
+                ...miniCard,
+                alignSelf: "center",
+                width: "min(320px, 100%)",
+                height: "auto",
+                padding: 8,
+              }}
+            >
+              <div
+                style={{
+                  maxHeight: 3 * 24 + 12,         // ≈ hauteur de 3 lignes (approx)
+                  overflowY: liveRanking.length > 3 ? "auto" : "visible",
+                }}
+              >
                 {liveRanking.map((r, i) => (
                   <div key={r.id} style={miniRankRow}>
                     <div style={miniRankName}>{i + 1}. {r.name}</div>
@@ -1291,8 +1312,6 @@ export default function X01Play({
   }
 
   function PlayersBlock(props: {
-    playersOpen: boolean;
-    setPlayersOpen: (b: boolean) => void;
     statePlayers: EnginePlayer[];
     profileById: Record<string, Profile>;
     lastByPlayer: Record<string, UIDart[]>;
@@ -1303,8 +1322,6 @@ export default function X01Play({
     scoresByPlayer: Record<string, number>;
   }) {
     const {
-      playersOpen,
-      setPlayersOpen,
       statePlayers,
       profileById,
       lastByPlayer,
@@ -1314,150 +1331,116 @@ export default function X01Play({
       start,
       scoresByPlayer,
     } = props;
-
+  
     return (
       <div
         style={{
           background: "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 18,
-          padding: 12,
+          padding: 10,
           marginBottom: 12,
           boxShadow: "0 10px 30px rgba(0,0,0,.35)",
         }}
       >
-        <button
-          onClick={() => setPlayersOpen(!playersOpen)}
-          style={{
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            background: "transparent",
-            color: "#e8e8ec",
-            fontWeight: 800,
-            fontSize: 16,
-            border: "none",
-            cursor: "pointer",
-          }}
-        >
-          <span>Joueurs</span>
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 6,
-              border: "1px solid rgba(255,255,255,.12)",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transform: playersOpen ? "rotate(180deg)" : "none",
-              transition: "transform .15s",
-            }}
-          >
-            ▾
-          </span>
-        </button>
-
-        {playersOpen && (
-          <div style={{ marginTop: 10, maxHeight: "38vh", overflow: "auto", paddingRight: 4 }}>
-            {statePlayers.map((p) => {
-              const prof = profileById[p.id];
-              const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
-              const last = lastByPlayer[p.id] || [];
-              const bust = !!lastBustByPlayer[p.id];
-              const dCount = dartsCount[p.id] || 0;
-              const pSum = pointsSum[p.id] || 0;
-              const a3d = dCount > 0 ? ((pSum / dCount) * 3).toFixed(2) : "0.00";
-
-              return (
+        {/* Liste directe — pas d’en-tête “Joueurs” */}
+        <div style={{ maxHeight: "40vh", overflow: "auto", paddingRight: 4 }}>
+          {statePlayers.map((p) => {
+            const prof = profileById[p.id];
+            const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
+            const last = lastByPlayer[p.id] || [];
+            const bust = !!lastBustByPlayer[p.id];
+            const dCount = dartsCount[p.id] || 0;
+            const pSum = pointsSum[p.id] || 0;
+            const a3d = dCount > 0 ? ((pSum / dCount) * 3).toFixed(2) : "0.00";
+  
+            return (
+              <div
+                key={p.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                  border: "1px solid rgba(255,255,255,.07)",
+                  marginBottom: 8,
+                }}
+              >
                 <div
-                  key={p.id}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
-                    border: "1px solid rgba(255,255,255,.07)",
-                    marginBottom: 8,
+                    width: 40,
+                    height: 40,
+                    borderRadius: "50%",
+                    overflow: "hidden",
+                    background: "rgba(255,255,255,.06)",
+                    flex: "0 0 auto",
                   }}
                 >
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: "50%",
-                      overflow: "hidden",
-                      background: "rgba(255,255,255,.06)",
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    {avatarSrc ? (
-                      <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  {avatarSrc ? (
+                    <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#999",
+                        fontWeight: 700,
+                      }}
+                    >
+                      ?
+                    </div>
+                  )}
+                </div>
+  
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
+                    {last.length > 0 ? (
+                      last.map((d, i) => {
+                        const st = chipStyle(d, bust);
+                        return (
+                          <span
+                            key={i}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              minWidth: 38,
+                              height: 26,
+                              padding: "0 10px",
+                              borderRadius: 10,
+                              border: st.border as string,
+                              background: st.background as string,
+                              color: st.color as string,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {fmt(d)}
+                          </span>
+                        );
+                      })
                     ) : (
-                      <div
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "#999",
-                          fontWeight: 700,
-                        }}
-                      >
-                        ?
-                      </div>
+                      <span style={{ color: "#aab" }}>Dernière volée : —</span>
                     )}
                   </div>
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
-                      {last.length > 0 ? (
-                        last.map((d, i) => {
-                          const st = chipStyle(d, bust);
-                          return (
-                            <span
-                              key={i}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                minWidth: 38,
-                                height: 26,
-                                padding: "0 10px",
-                                borderRadius: 10,
-                                border: st.border as string,
-                                background: st.background as string,
-                                color: st.color as string,
-                                fontWeight: 800,
-                              }}
-                            >
-                              {fmt(d)}
-                            </span>
-                          );
-                        })
-                      ) : (
-                        <span style={{ color: "#aab" }}>Dernière volée : —</span>
-                      )}
-                    </div>
-
-                    <div style={{ marginTop: 4, fontSize: 12, color: "#cfd1d7" }}>
-                      Set 1 • Leg 1 • Darts: {dCount} • Moy/3D: {a3d}
-                    </div>
-                  </div>
-
-                  <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
-                    {scoresByPlayer[p.id] ?? start}
+  
+                  <div style={{ marginTop: 4, fontSize: 12, color: "#cfd1d7" }}>
+                    Set 1 • Leg 1 • Darts: {dCount} • Moy/3D: {a3d}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+  
+                <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
+                  {scoresByPlayer[p.id] ?? start}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }
