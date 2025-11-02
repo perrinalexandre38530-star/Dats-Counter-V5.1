@@ -2,8 +2,8 @@
 // src/pages/X01Play.tsx
 // Header sticky, Keypad fixed, Checkout centré sous la volée
 // Sons (dart/bust), vibration, TTS (volée & fin de partie)
-// Avatar agrandi + NOM sous l’avatar (MAJ)
-// Mini-Stats sous l’avatar + mini-Classement sous la volée  (MAJ)
+// Avatar agrandi + NOM sous l’avatar (médaillon avec fondu)
+// Mini-Stats sous l’avatar + mini-Classement sous la volée
 // Bouton QUITTER doré
 // + Reprise/sauvegarde Historique (History.upsert + resumeId)
 // + CONTINUER jusqu’à l’avant-dernier + Overlay Classement/Stats de manche
@@ -11,8 +11,8 @@
 // + Construction/sauvegarde Stats de match (saveMatchStats)
 // + Commit auto des stats globales à chaque fin de manche (commitLegStatsOnce)
 // + SFX intégrés (double/triple/bull/DBull/180 + touches Keypad)
-// + [NEW] Log de volées + computeLegStats()/aggregateMatch()
-// + [FIX] Commit immédiat Fin de manche -> Historique + stats unifiées
+// + Log de volées + computeLegStats()/aggregateMatch()
+// + Affichage Set/Leg — joueurs & header
 // ============================================
 import React from "react";
 import { useX01Engine } from "../hooks/useX01Engine";
@@ -28,9 +28,8 @@ import { mergeLegToBasics } from "../lib/statsBridge";
 
 // Stats locales/riche (live + fin de manche)
 import { commitLegStatsOnce } from "../lib/statsOnce";
-import { saveMatchStats } from "../lib/stats";
+import { saveMatchStats, computeLegStats, aggregateMatch } from "../lib/stats";
 import type { Visit, LegInput, LegStats as RichLegStats } from "../lib/stats";
-import { computeLegStats, aggregateMatch } from "../lib/stats";
 
 // Types app
 import type {
@@ -45,24 +44,24 @@ import type {
 type EnginePlayer = { id: string; name: string };
 type RankItem = { id: string; name: string; score: number };
 
+/* ---- Dimensions & layout global (alignement) ---- */
 const NAV_HEIGHT = 64;
-// ↓ ancien: 360
 const KEYPAD_HEIGHT = 260;
-// mise à l’échelle visuelle du clavier (sans toucher au composant)
 const KEYPAD_SCALE = 0.88;
+const CONTENT_MAX = 520; // largeur de contenu commune → aligne tous les blocs
 
 /* ====== Compaction UI (header + liste joueurs) ====== */
-const HEADER_SCALE = 0.94;     // 1 = taille actuelle ; <1 = plus compact
-const AVATAR_SIZE = 108;       // avatar joueur actif (était ~120)
-const MINI_CARD_HEIGHT = 86;   // mini-card sous avatar (était ~108)
-const MINI_CARD_WIDTH = 180;   // largeur mini-card sous avatar
+const HEADER_SCALE = 0.94;
+const AVATAR_SIZE = 108;
+const MINI_CARD_HEIGHT = 86;
+const MINI_CARD_WIDTH = 180;
 const HEADER_OUTER_PADDING = 12;
 
-const PLAYER_ROW_AVATAR = 36;  // avatar lignes joueurs (était 40)
-const PLAYER_ROW_PAD_Y = 8;    // padding vertical d’une ligne (était 10)
-const PLAYER_ROW_GAP = 10;     // gap horizontal dans la ligne (était 12)
-const PLAYERS_BLOCK_PADDING = 10; // padding autour du bloc joueurs (était 12)
-const PLAYERS_LIST_MAX_H_VH = 32; // hauteur max visible (scroll) (était ~38)
+const PLAYER_ROW_AVATAR = 36;
+const PLAYER_ROW_PAD_Y = 8;
+const PLAYER_ROW_GAP = 10;
+const PLAYERS_BLOCK_PADDING = 10;
+const PLAYERS_LIST_MAX_H_VH = 32;
 
 /* ---------------------------------------------
    Helpers commit Fin de manche (compat Legacy/New)
@@ -121,7 +120,7 @@ async function commitFinishedLeg(opts: {
 ----------------------------------------------*/
 function makeX01RecordFromEngineCompat(args: {
   engine: {
-    rules: { start: number; doubleOut: boolean };
+    rules: { start: number; doubleOut: boolean; setsToWin?: number; legsPerSet?: number };
     players: EnginePlayer[];
     scores: number[];
     currentIndex: number;
@@ -388,6 +387,8 @@ export default function X01Play({
   onFinish,
   onExit,
   params,
+  setsToWin,
+  legsPerSet,
 }: {
   profiles?: Profile[];
   playerIds?: string[];
@@ -396,8 +397,21 @@ export default function X01Play({
   onFinish: (m: MatchRecord) => void;
   onExit: () => void;
   params?: { resumeId?: string } | any;
+  setsToWin?: number;
+  legsPerSet?: number;
 }) {
   const resumeId: string | undefined = params?.resumeId;
+
+  const settingsX01 = React.useMemo(() => {
+    try {
+      const raw = safeGetLocalStorage("settings_x01");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, []);
+  const setsTarget = Math.max(1, Number(setsToWin ?? settingsX01?.setsToWin ?? 1));
+  const legsTarget = Math.max(1, Number(legsPerSet ?? settingsX01?.legsPerSet ?? 1));
 
   // Reprise snapshot X01
   const resumeSnapshot = React.useMemo<X01Snapshot | null>(() => {
@@ -409,11 +423,11 @@ export default function X01Play({
     return snap ?? null;
   }, [resumeId]);
 
-  // ===== Overlay de manche + stats riches (injectées)
+  // ===== Overlay de manche + stats riches
   const [lastLegResult, setLastLegResult] = React.useState<LegResult | null>(null);
   const [overlayOpen, setOverlayOpen] = React.useState(false);
 
-  // ===== NEW: log de volées pour computeLegStats()
+  // ===== Log volées
   const [visitsLog, setVisitsLog] = React.useState<Visit[]>([]);
   const visitNoRef = React.useRef<number>(0);
   function pushVisitLog(opts: {
@@ -447,6 +461,10 @@ export default function X01Play({
     (safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy
   );
 
+  // Compteurs Set/Leg (affichage)
+  const [currentSet, setCurrentSet] = React.useState(1);
+  const [currentLegInSet, setCurrentLegInSet] = React.useState(1);
+
   const {
     state,
     currentPlayer,
@@ -472,8 +490,17 @@ export default function X01Play({
     resume: resumeSnapshot,
     finishPolicy: defaultFinishPolicy,
 
-    // ===== Fin de manche -> calcule & attache __legStats + COMMIT (Historique + stats unifiées)
+    // Fin de manche
     onLegEnd: async (res: LegResult) => {
+      setCurrentLegInSet((x) => {
+        const next = x + 1;
+        if (next > legsTarget) {
+          setCurrentSet((s) => s + 1);
+          return 1;
+        }
+        return next;
+      });
+
       setLastLegResult(res);
       setOverlayOpen(true);
 
@@ -484,7 +511,7 @@ export default function X01Play({
           players: ((state.players || []) as { id: string }[]).map((p) => p.id),
           visits: visitsLog,
           finishedAt: Date.now(),
-          legNo: res.legNo ?? 1,
+          legNo: res.legNo ?? currentLegInSet,
           winnerId: res.winnerId ?? null,
         };
         const legStats: RichLegStats = computeLegStats(legInput);
@@ -515,7 +542,7 @@ export default function X01Play({
     resumeId ?? (crypto.randomUUID?.() ?? String(Date.now()))
   );
 
-  // ===== Commit auto stats globales
+  // Commit auto stats globales
   React.useEffect(() => {
     if (!lastLegResult) return;
     const res = lastLegResult;
@@ -525,7 +552,7 @@ export default function X01Play({
       name: p.name,
     }));
 
-    const legId = `${matchIdRef.current || "local"}::leg#${res.legNo || 1}`;
+    const legId = `${matchIdRef.current || "local"}::set#${currentSet}::leg#${res.legNo || currentLegInSet}`;
 
     const perPlayer: Record<string, any> = {};
     const ids = Object.keys(res.darts || {});
@@ -561,7 +588,7 @@ export default function X01Play({
       winnerId: res.winnerId,
       perPlayer,
     });
-  }, [lastLegResult, state.players]);
+  }, [lastLegResult, state.players, currentSet, currentLegInSet]);
 
   // Persistance après lancer (reprise en cours)
   function buildEngineLike(dartsThisTurn: UIDart[], winnerId?: string | null) {
@@ -572,13 +599,13 @@ export default function X01Play({
     const scores: number[] = playersArr.map((p) => scoresByPlayer[p.id] ?? start);
     const idx = playersArr.findIndex((p) => p.id === (currentPlayer?.id as string));
     return {
-      rules: { start, doubleOut },
+      rules: { start, doubleOut, setsToWin: setsTarget, legsPerSet: legsTarget },
       players: playersArr,
       scores,
       currentIndex: idx >= 0 ? idx : 0,
       dartsThisTurn,
-      sets: undefined as number[] | undefined,
-      legs: undefined as number[] | undefined,
+      sets: undefined,
+      legs: undefined,
       winnerId: winnerId ?? null,
     };
   }
@@ -825,7 +852,7 @@ export default function X01Play({
 
   if (!state.players?.length) {
     return (
-      <div className="container" style={{ padding: 16 }}>
+      <div style={{ padding: 16, maxWidth: CONTENT_MAX, margin: "0 auto" }}>
         <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
           ← Quitter
         </button>
@@ -865,6 +892,8 @@ export default function X01Play({
             rules: {
               x01Start: start,
               finishPolicy: doubleOut ? "doubleOut" : "singleOut",
+              setsToWin: setsTarget,
+              legsPerSet: legsTarget,
             },
             players: playersArr.map((p) => p.id),
             winnerId: standing[0]?.id ?? winner?.id ?? playersArr[0]?.id,
@@ -893,7 +922,7 @@ export default function X01Play({
     u.rate = 1;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
-  }, [isOver, liveRanking, voiceOn, winner?.id, lastLegResult, state.players, scoresByPlayer, start, doubleOut]);
+  }, [isOver, liveRanking, voiceOn, winner?.id, lastLegResult, state.players, scoresByPlayer, start, doubleOut, setsTarget, legsTarget]);
 
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
 
@@ -907,7 +936,7 @@ export default function X01Play({
     }
   }, [overlayOpen, showEndBanner, bgMusic]);
 
-  // Force overlay si fin match
+  // Force overlay si fin match (fallback auto)
   React.useEffect(() => {
     if (!isOver) return;
     if (!overlayOpen) setOverlayOpen(true);
@@ -969,61 +998,77 @@ export default function X01Play({
   }, [isOver]);
 
   return (
-    <div className="x01play-container" style={{ paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16 }}>
-      {/* Barre haute */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+    <div
+      className="x01play-container"
+      style={{
+        paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16,
+      }}
+    >
+      {/* Barre haute (alignée) */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, maxWidth: CONTENT_MAX, marginInline: "auto", paddingInline: 12 }}>
         <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
           ← Quitter
         </button>
         <div />
       </div>
 
-      {/* HEADER sticky */}
-      <HeaderBlock
-        currentPlayer={currentPlayer}
-        currentAvatar={(currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null}
-        currentRemaining={currentRemaining}
-        currentThrow={currentThrow}
-        doubleOut={doubleOut}
-        multiplier={multiplier}
-        setMultiplier={setMultiplier}
-        start={start}
-        scoresByPlayer={scoresByPlayer}
-        statePlayers={(state.players || []) as EnginePlayer[]}
-        liveRanking={liveRanking}
-        curDarts={curDarts}
-        curM3D={curM3D}
-        bestVisit={bestVisitByPlayer[currentPlayer?.id ?? ""] ?? 0}   // 👈 AJOUT
-      />
+      {/* HEADER sticky — aligné et centré */}
+      <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 12 }}>
+        <HeaderBlock
+          currentPlayer={currentPlayer}
+          currentAvatar={(currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null}
+          currentRemaining={currentRemaining}
+          currentThrow={currentThrow}
+          doubleOut={doubleOut}
+          multiplier={multiplier}
+          setMultiplier={setMultiplier}
+          start={start}
+          scoresByPlayer={scoresByPlayer}
+          statePlayers={(state.players || []) as EnginePlayer[]}
+          liveRanking={liveRanking}
+          curDarts={curDarts}
+          curM3D={curM3D}
+          bestVisit={bestVisitByPlayer[currentPlayer?.id ?? ""] ?? 0}
+          currentSet={currentSet}
+          currentLegInSet={currentLegInSet}
+          setsTarget={setsTarget}
+          legsTarget={legsTarget}
+        />
+      </div>
 
-      {/* Bloc joueurs (accordéon) */}
-      <PlayersBlock
-        playersOpen={playersOpen}
-        setPlayersOpen={setPlayersOpen}
-        statePlayers={(state.players || []) as EnginePlayer[]}
-        profileById={profileById}
-        lastByPlayer={lastByPlayer}
-        lastBustByPlayer={lastBustByPlayer}
-        dartsCount={dartsCount}
-        pointsSum={pointsSum}
-        start={start}
-        scoresByPlayer={scoresByPlayer}
-      />
+      {/* Bloc joueurs (accordéon) — aligné */}
+      <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 12 }}>
+        <PlayersBlock
+          playersOpen={playersOpen}
+          setPlayersOpen={setPlayersOpen}
+          statePlayers={(state.players || []) as EnginePlayer[]}
+          profileById={profileById}
+          lastByPlayer={lastByPlayer}
+          lastBustByPlayer={lastBustByPlayer}
+          dartsCount={dartsCount}
+          pointsSum={pointsSum}
+          start={start}
+          scoresByPlayer={scoresByPlayer}
+          currentSet={currentSet}
+          currentLegInSet={currentLegInSet}
+          setsTarget={setsTarget}
+          legsTarget={legsTarget}
+        />
+      </div>
 
       {/* Spacer keypad */}
       <div style={{ height: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 8 }} />
 
-      {/* Keypad FIXED */}
+      {/* Keypad FIXED (centré aux mêmes bords) */}
       <div
         style={{
           position: "fixed",
-          left: 0,
-          right: 0,
+          left: "50%",
+          transform: `translateX(-50%) scale(${KEYPAD_SCALE})`,
           bottom: NAV_HEIGHT,
           zIndex: 45,
           padding: "0 12px 8px",
-          transform: `scale(${KEYPAD_SCALE})`,
-          transformOrigin: "bottom center",
+          width: `min(100%, ${CONTENT_MAX}px)`,
         }}
       >
         <Keypad
@@ -1076,7 +1121,7 @@ export default function X01Play({
               players: playersNow,
               updatedAt: Date.now(),
               createdAt: Date.now(),
-              payload: res,
+              payload: { ...res, meta: { currentSet, currentLegInSet, setsTarget, legsTarget } },
             } as any);
             (navigator as any).vibrate?.(50);
           } catch (e) {
@@ -1101,7 +1146,7 @@ export default function X01Play({
 
   /* ===== sous-composants internes ===== */
 
-  /** HEADER : Avatar + (en dessous) NOM + Mini-Stats | Centre : score+volée+checkout + (en dessous) Mini-Classement */
+  /** HEADER : Avatar (médaillon fondu) + Nom + Mini-Stats | Centre : score+volée+checkout + chips Set/Leg + mini-classement */
   function HeaderBlock(props: {
     currentPlayer?: EnginePlayer | null;
     currentAvatar: string | null;
@@ -1116,12 +1161,36 @@ export default function X01Play({
     liveRanking: RankItem[];
     curDarts: number;
     curM3D: string;
+    bestVisit: number;
+    currentSet: number;
+    currentLegInSet: number;
+    setsTarget: number;
+    legsTarget: number;
   }) {
-    const { currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking, curDarts, curM3D } = props;
+    const {
+      currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking,
+      curDarts, curM3D, bestVisit, currentSet, currentLegInSet, setsTarget, legsTarget
+    } = props;
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
     const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
-  
+
+    // style chip Set/Leg
+    const chip = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,200,80,.35)",
+      background: "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
+      color: "#ffcf57",
+      fontWeight: 800,
+      fontSize: 12,
+      boxShadow: "0 6px 18px rgba(255,195,26,.15)",
+      whiteSpace: "nowrap" as const,
+    };
+
     return (
       <div
         style={{
@@ -1139,57 +1208,65 @@ export default function X01Play({
           marginBottom: 10,
         }}
       >
-        {/* Grille : Avatar(+mini-stats) | Centre (nom+score+volée+mini-classement) */}
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
-          {/* Colonne gauche : Avatar + Mini-Stats dessous (épuré) */}
+          {/* Colonne gauche : Avatar + Nom + Mini-Stats */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+            {/* Médaillon avatar avec FONDU radial */}
             <div
               style={{
-                width: AVATAR_SIZE,
-                height: AVATAR_SIZE,
+                padding: 6,
                 borderRadius: "50%",
-                overflow: "hidden",
-                background: "linear-gradient(180deg, #1b1b1f, #111114)",
-                border: "1px solid rgba(255,255,255,.08)",
-                boxShadow: "inset 0 0 0 6px rgba(255,255,255,.04)", // anneau translucide
+                WebkitMaskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
+                maskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
               }}
             >
-              {currentAvatar ? (
-                <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              ) : (
-                <div
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "#999",
-                    fontWeight: 700,
-                  }}
-                >
-                  ?
-                </div>
-              )}
+              <div
+                style={{
+                  width: AVATAR_SIZE,
+                  height: AVATAR_SIZE,
+                  borderRadius: "50%",
+                  overflow: "hidden",
+                  background: "linear-gradient(180deg, #1b1b1f, #111114)",
+                  boxShadow: "0 8px 28px rgba(0,0,0,.35)", // halo doux, plus d'anneau dur
+                }}
+              >
+                {currentAvatar ? (
+                  <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : (
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#999",
+                      fontWeight: 700,
+                    }}
+                  >
+                    ?
+                  </div>
+                )}
+              </div>
             </div>
-  
+
             {/* Nom sous avatar */}
             <div style={{ fontWeight: 900, fontSize: 18, color: "#ffcf57", letterSpacing: 0.3 }}>
               {currentPlayer?.name ?? "—"}
             </div>
-  
-            {/* Mini-Stats épuré (sans titre) */}
+
+            {/* Mini-Stats épuré */}
             <div style={{ ...miniCard, width: MINI_CARD_WIDTH, height: MINI_CARD_HEIGHT, padding: 8 }}>
               <div style={miniText}>
-                <div>Meilleure volée : <b>{Math.max(0, (currentPlayer ? (bestVisitByPlayer[currentPlayer.id] || 0) : 0))}</b></div>
+                <div>Meilleure volée : <b>{Math.max(0, bestVisit)}</b></div>
                 <div>Moy/3D : <b>{curM3D}</b></div>
                 <div>Darts jouées : <b>{curDarts}</b></div>
                 <div>Volée : <b>{Math.min(currentThrow.length, 3)}/3</b></div>
               </div>
             </div>
           </div>
-  
-          {/* Centre : score + volée + checkout + mini-classement (sans titre) */}
+
+          {/* Centre : score + volée + checkout + chips Set/Leg + mini-classement */}
           <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
             <div
               style={{
@@ -1204,7 +1281,7 @@ export default function X01Play({
             >
               {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
             </div>
-  
+
             {/* Pastilles volée */}
             <div style={{ marginTop: 2, display: "flex", gap: 6, justifyContent: "center" }}>
               {[0, 1, 2].map((i: number) => {
@@ -1234,8 +1311,17 @@ export default function X01Play({
                 );
               })}
             </div>
-  
-            {/* Checkout centré */}
+
+            {/* Chips Set/Leg déplacés ICI (sous la volée) */}
+            <div style={{ marginTop: 2, display: "flex", justifyContent: "center" }}>
+              <span style={chip as React.CSSProperties}>
+                <span>Set {currentSet}/{setsTarget}</span>
+                <span style={{ opacity: .6 }}>•</span>
+                <span>Leg {currentLegInSet}/{legsTarget}</span>
+              </span>
+            </div>
+
+            {/* Checkout centré (sous chips) */}
             {(() => {
               const only = suggestCheckout(predictedAfter, doubleOut, dartsLeft)[0];
               if (!only || currentThrow.length >= 3) return null;
@@ -1271,10 +1357,10 @@ export default function X01Play({
                 </div>
               );
             })()}
-  
-            {/* Mini-Classement sous la volée (sans titre) ; limité visuellement à 3 lignes + scroll si > 3 */}
+
+            {/* Mini-Classement */}
             <div style={{ ...miniCard, alignSelf: "center", width: "min(320px, 100%)", height: "auto", padding: 6 }}>
-              <div style={{ maxHeight: 3 * 28, overflow: liveRanking.length > 3 ? "auto" : "visible" as any }}>
+              <div style={{ maxHeight: 3 * 28, overflow: (liveRanking.length > 3 ? "auto" : "visible") as any }}>
                 {liveRanking.map((r, i) => (
                   <div key={r.id} style={{ ...miniRankRow, marginBottom: 3 }}>
                     <div style={miniRankName}>{i + 1}. {r.name}</div>
@@ -1302,6 +1388,10 @@ export default function X01Play({
     pointsSum: Record<string, number>;
     start: number;
     scoresByPlayer: Record<string, number>;
+    currentSet: number;
+    currentLegInSet: number;
+    setsTarget: number;
+    legsTarget: number;
   }) {
     const {
       playersOpen,
@@ -1314,8 +1404,27 @@ export default function X01Play({
       pointsSum,
       start,
       scoresByPlayer,
+      currentSet,
+      currentLegInSet,
+      setsTarget,
+      legsTarget,
     } = props;
-  
+
+    const headerChip: React.CSSProperties = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,200,80,.32)",
+      background: "linear-gradient(180deg, rgba(255,195,26,.10), rgba(28,28,32,.95))",
+      color: "#ffcf57",
+      fontWeight: 800,
+      fontSize: 12,
+      boxShadow: "0 6px 16px rgba(255,195,26,.12)",
+      whiteSpace: "nowrap",
+    };
+
     return (
       <div
         style={{
@@ -1327,23 +1436,52 @@ export default function X01Play({
           boxShadow: "0 10px 30px rgba(0,0,0,.35)",
         }}
       >
-        {/* En-tête supprimé → on garde seulement un petit bouton disclosure à droite pour gagner de la place */}
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        {/* Nouvelle ENTÊTE : JOUEURS + Set/Leg + disclosure */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "4px 6px 8px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span
+              style={{
+                padding: "6px 10px",
+                borderRadius: 8,
+                background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+                color: "#151517",
+                fontWeight: 900,
+                letterSpacing: .4,
+              }}
+            >
+              JOUEURS
+            </span>
+
+            <span style={headerChip}>
+              <span>Set {currentSet}/{setsTarget}</span>
+              <span style={{ opacity: .6 }}>•</span>
+              <span>Leg {currentLegInSet}/{legsTarget}</span>
+            </span>
+          </div>
+
           <button
             onClick={() => setPlayersOpen(!playersOpen)}
             aria-label="Afficher / masquer les joueurs"
             style={{
-              width: 28, height: 28, borderRadius: 8,
+              width: 30, height: 30, borderRadius: 10,
               border: "1px solid rgba(255,255,255,.12)", background: "transparent",
-              color: "#e8e8ec", cursor: "pointer"
+              color: "#e8e8ec", cursor: "pointer", fontWeight: 900
             }}
           >
             {playersOpen ? "▴" : "▾"}
           </button>
         </div>
-  
+
         {playersOpen && (
-          <div style={{ marginTop: 8, maxHeight: `${PLAYERS_LIST_MAX_H_VH}vh`, overflow: "auto", paddingRight: 4 }}>
+          <div style={{ marginTop: 4, maxHeight: `${PLAYERS_LIST_MAX_H_VH}vh`, overflow: "auto", paddingRight: 4 }}>
             {statePlayers.map((p) => {
               const prof = profileById[p.id];
               const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
@@ -1352,7 +1490,7 @@ export default function X01Play({
               const dCount = dartsCount[p.id] || 0;
               const pSum = pointsSum[p.id] || 0;
               const a3d = dCount > 0 ? ((pSum / dCount) * 3).toFixed(2) : "0.00";
-  
+
               return (
                 <div
                   key={p.id}
@@ -1396,7 +1534,7 @@ export default function X01Play({
                       </div>
                     )}
                   </div>
-  
+
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
@@ -1429,12 +1567,12 @@ export default function X01Play({
                         <span style={{ color: "#aab", fontSize: 12 }}>Dernière volée : —</span>
                       )}
                     </div>
-  
+
                     <div style={{ marginTop: 3, fontSize: 11.5, color: "#cfd1d7" }}>
-                      Set 1 • Leg 1 • Darts: {dCount} • Moy/3D: {a3d}
+                      Set {currentSet} • Leg {currentLegInSet} • Darts: {dCount} • Moy/3D: {a3d}
                     </div>
                   </div>
-  
+
                   <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
                     {scoresByPlayer[p.id] ?? start}
                   </div>
@@ -1445,7 +1583,7 @@ export default function X01Play({
         )}
       </div>
     );
-  }  
+  }
 
   function ContinueModal({ endNow, continueAfterFirst }: { endNow: () => void; continueAfterFirst: () => void }) {
     return (
