@@ -1,174 +1,450 @@
+// ============================================
+// src/pages/X01Setup.tsx
+// Paramètres X01 (pré-match)
+// - Score de départ (301 / 501 / 701 / 901)
+// - Mode de sortie (Simple / Double / Master)
+// - Mode d'entrée (Simple / Double / Master)
+// - Format du match : Sets à gagner + Legs par set
+// - Ordre aléatoire
+// - Sélecteur de joueurs (sélectionnés au-dessus, médaillons uniquement)
+// - Boutons Annuler / Lancer (en haut du panneau de sélection)
+// - Persistance: localStorage("settings_x01")
+// - Nouvelles options persistées : officialMatch, voiceOn, sfxOn
+// ============================================
 import React from "react";
-import Section from "../components/Section";
-import PlayerPicker from "../components/PlayerPicker";
 import type { Profile } from "../lib/types";
-import RulesModal from "../components/RulesModal";
 
-type StartScore = 301 | 501 | 701 | 1001;
-
-export default function X01Setup({
-  profiles,
-  onStart,
-  defaults,
-}: {
+type SetupProps = {
   profiles: Profile[];
-  /**
-   * Appel au démarrage :
-   * - compat : (ids, start, doubleOut)
-   * - étendu : (ids, start, doubleOut, { setsToWin, legsToWin })
-   */
-  onStart: (
-    ids: string[],
-    start: StartScore,
-    doubleOut: boolean,
-    setLeg?: { setsToWin: number; legsToWin: number }
-  ) => void;
-  /** Ajout de valeurs par défaut pour Sets/Legs (1 = désactivé) */
-  defaults: {
-    start: StartScore;
+  onCancel: () => void;
+  onStart: (opts: {
+    playerIds: string[];
+    start: 301 | 501 | 701 | 901;
+    outMode: "simple" | "double" | "master";
+    inMode: "simple" | "double" | "master";
     doubleOut: boolean;
-    setsToWin?: number;
-    legsToWin?: number;
+    doubleIn: boolean;
+    setsToWin: number;   // 1/3/5/7/9/11/13
+    legsPerSet: number;  // 1/3/5/7
+    randomOrder: boolean;
+  }) => void;
+};
+
+const SCORE_CHOICES: Array<301 | 501 | 701 | 901> = [301, 501, 701, 901];
+const SET_CHOICES = [1, 3, 5, 7, 9, 11, 13] as const;
+const LEG_CHOICES = [1, 3, 5, 7] as const;
+
+type SavedSettings = Partial<{
+  start: 301 | 501 | 701 | 901;
+  outMode: "simple" | "double" | "master";
+  inMode: "simple" | "double" | "master";
+  setsToWin: number;
+  legsPerSet: number;
+  randomOrder: boolean;
+  officialMatch: boolean; // 👈 serve alterné
+  voiceOn: boolean;       // 👈 TTS
+  sfxOn: boolean;         // 👈 sons arcade
+}>;
+
+function loadSettings(): SavedSettings {
+  try {
+    const raw = localStorage.getItem("settings_x01");
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+function saveSettings(s: SavedSettings) {
+  try {
+    localStorage.setItem("settings_x01", JSON.stringify(s));
+  } catch {}
+}
+
+function pill(on: boolean): React.CSSProperties {
+  return {
+    padding: "8px 12px",
+    borderRadius: 999,
+    fontWeight: 800,
+    border: "1px solid " + (on ? "rgba(255,200,80,.45)" : "rgba(255,255,255,.12)"),
+    background: on
+      ? "linear-gradient(180deg, #ffc63a, #ffaf00)"
+      : "linear-gradient(180deg, rgba(24,24,28,.7), rgba(18,18,22,.7))",
+    color: on ? "#1a1a1a" : "#e9e9ef",
+    cursor: "pointer",
+    boxShadow: on ? "0 8px 24px rgba(255,180,0,.28)" : "none",
   };
-}) {
-  const [sel, setSel] = React.useState<string[]>([]);
-  const [start, setStart] = React.useState<StartScore>(defaults.start);
-  const [doubleOut, setDoubleOut] = React.useState<boolean>(defaults.doubleOut);
-  // --- NEW: format du match (1 = pas de sets/legs)
-  const [setsToWin, setSetsToWin] = React.useState<number>(defaults.setsToWin ?? 1);
-  const [legsToWin, setLegsToWin] = React.useState<number>(defaults.legsToWin ?? 1);
+}
 
-  const [openRules, setOpenRules] = React.useState(false);
+const card: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(16,16,20,.9), rgba(10,10,12,.85))",
+  border: "1px solid rgba(255,255,255,.08)",
+  borderRadius: 16,
+  padding: 12,
+  boxShadow: "0 10px 30px rgba(0,0,0,.35)",
+};
 
-  function launch() {
-    if (!sel.length) {
-      alert("Sélectionne au moins 1 joueur.");
-      return;
-    }
-    onStart(sel, start, doubleOut, {
-      setsToWin: Math.max(1, Math.floor(setsToWin || 1)),
-      legsToWin: Math.max(1, Math.floor(legsToWin || 1)),
+const title: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 10,
+  background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+  color: "#151517",
+  fontWeight: 900,
+  letterSpacing: 0.4,
+  display: "inline-block",
+};
+
+const sub: React.CSSProperties = { color: "#cfd1d7", fontSize: 12 };
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+export default function X01Setup({ profiles, onCancel, onStart }: SetupProps) {
+  const saved = React.useMemo(loadSettings, []);
+  const [start, setStart] = React.useState<301 | 501 | 701 | 901>(saved.start ?? 501);
+  const [outMode, setOutMode] = React.useState<"simple" | "double" | "master">(saved.outMode ?? "double");
+  const [inMode, setInMode] = React.useState<"simple" | "double" | "master">(saved.inMode ?? "simple");
+  const [setsToWin, setSetsToWin] = React.useState<number>(saved.setsToWin ?? 1);
+  const [legsPerSet, setLegsPerSet] = React.useState<number>(saved.legsPerSet ?? 1);
+  const [randomOrder, setRandomOrder] = React.useState<boolean>(saved.randomOrder ?? false);
+
+  // nouvelles options persistées (ne changent pas la signature onStart)
+  const [officialMatch, setOfficialMatch] = React.useState<boolean>(saved.officialMatch ?? false);
+  const [voiceOn, setVoiceOn] = React.useState<boolean>(saved.voiceOn ?? true);
+  const [sfxOn, setSfxOn] = React.useState<boolean>(saved.sfxOn ?? true);
+
+  const [available, setAvailable] = React.useState<Profile[]>(() => profiles.slice());
+  const [selected, setSelected] = React.useState<Profile[]>([]);
+
+  React.useEffect(() => {
+    saveSettings({
+      start,
+      outMode,
+      inMode,
+      setsToWin,
+      legsPerSet,
+      randomOrder,
+      officialMatch,
+      voiceOn,
+      sfxOn,
+    });
+  }, [start, outMode, inMode, setsToWin, legsPerSet, randomOrder, officialMatch, voiceOn, sfxOn]);
+
+  function addPlayer(p: Profile) {
+    setAvailable((a) => a.filter((x) => x.id !== p.id));
+    setSelected((s) => [...s, p]);
+  }
+  function removePlayer(p: Profile) {
+    setSelected((s) => s.filter((x) => x.id !== p.id));
+    setAvailable((a) => [...a, p]);
+  }
+
+  function handleStart() {
+    if (!selected.length) return;
+    const order = randomOrder ? shuffle(selected) : selected.slice();
+
+    // mapping provisoire pour compat moteur :
+    const doubleOut = outMode !== "simple";   // master -> true tant que triple-out non géré
+    const doubleIn  = inMode  !== "simple";   // master -> true tant que master-in non géré
+
+    // ✅ Garde-fou global lisible par X01Play (et autres écrans)
+    const payloadForPlay = {
+      playerIds: order.map((p) => p.id),
+      start,
+      outMode,
+      inMode,
+      doubleOut,
+      doubleIn,
+      setsToWin,
+      legsPerSet,
+      randomOrder,
+      officialMatch,
+      finishPolicy: "firstToZero" as const,
+      audio: { voiceOn, sfxOn },
+    };
+    (window as any).__x01StartParams = payloadForPlay;
+
+    // ✅ Appel onStart selon la signature existante
+    onStart({
+      playerIds: payloadForPlay.playerIds,
+      start,
+      outMode,
+      inMode,
+      doubleOut,
+      doubleIn,
+      setsToWin,
+      legsPerSet,
+      randomOrder,
     });
   }
 
   return (
-    <div className="container">
-      <Section
-        title="Paramètres X01"
-        right={
-          <button className="btn" onClick={() => setOpenRules(true)}>
-            i
-          </button>
-        }
-      >
-        <div className="grid2">
-          <div>
-            <div className="small">Score de départ</div>
-            <div className="row" style={{ gap: 8, marginTop: 6 }}>
-              {[301, 501, 701, 1001].map((n) => (
-                <button
-                  key={n}
-                  className={`btn ${start === (n as StartScore) ? "primary" : ""}`}
-                  onClick={() => setStart(n as StartScore)}
-                >
+    <div style={{ maxWidth: 520, margin: "0 auto", padding: 12 }}>
+      {/* Bandeau titre + Quitter */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={title}>Paramètres X01</span>
+        <button
+          onClick={onCancel}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,180,0,.3)",
+            background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+            color: "#1a1a1a",
+            fontWeight: 900,
+            boxShadow: "0 10px 22px rgba(255,170,0,.28)",
+            cursor: "pointer",
+          }}
+        >
+          ← Annuler
+        </button>
+      </div>
+
+      {/* Score + modes */}
+      <div style={{ ...card, marginBottom: 10 }}>
+        <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Score de départ</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {SCORE_CHOICES.map((s) => (
+            <button key={s} onClick={() => setStart(s)} style={pill(start === s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div style={{ ...card }}>
+            <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Mode de sortie</div>
+            <select value={outMode} onChange={(e) => setOutMode(e.target.value as any)} style={selectStyle}>
+              <option value="simple">Simple</option>
+              <option value="double">Double</option>
+              <option value="master">Master (Triple)</option>
+            </select>
+          </div>
+
+          <div style={{ ...card }}>
+            <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Mode d’entrée</div>
+            <select value={inMode} onChange={(e) => setInMode(e.target.value as any)} style={selectStyle}>
+              <option value="simple">Simple</option>
+              <option value="double">Double</option>
+              <option value="master">Master (Triple)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Format du match */}
+      <div style={{ ...card, marginBottom: 10 }}>
+        <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Format du match</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div style={{ ...card }}>
+            <div style={{ fontWeight: 800, marginBottom: 6, color: "#e9e9ef" }}>Sets à gagner</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {SET_CHOICES.map((n) => (
+                <button key={n} onClick={() => setSetsToWin(n)} style={pill(setsToWin === n)}>
                   {n}
                 </button>
               ))}
             </div>
+            <div style={{ ...sub, marginTop: 6 }}>1 = pas de sets (match en un seul set)</div>
           </div>
 
-          <div>
-            <div className="small">Mode de sortie</div>
-            <select
-              className="input"
-              style={{ marginTop: 6 }}
-              value={doubleOut ? "double" : "straight"}
-              onChange={(e) => setDoubleOut(e.target.value === "double")}
-            >
-              <option value="straight">Straight</option>
-              <option value="double">Double</option>
-            </select>
-          </div>
-        </div>
-
-        {/* --- NEW: Format du match (Sets / Legs) --- */}
-        <div
-          style={{
-            marginTop: 12,
-            padding: 12,
-            borderRadius: 12,
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.07)",
-          }}
-        >
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>Format du match</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span>Sets à gagner</span>
-              <input
-                type="number"
-                min={1}
-                value={setsToWin}
-                onChange={(e) => setSetsToWin(Number(e.target.value))}
-                className="input"
-                style={{
-                  padding: 10,
-                  borderRadius: 10,
-                }}
-              />
-              <small style={{ opacity: 0.7 }}>1 = pas de sets (match en un seul set)</small>
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span>Legs à gagner (par set)</span>
-              <input
-                type="number"
-                min={1}
-                value={legsToWin}
-                onChange={(e) => setLegsToWin(Number(e.target.value))}
-                className="input"
-                style={{
-                  padding: 10,
-                  borderRadius: 10,
-                }}
-              />
-              <small style={{ opacity: 0.7 }}>
-                1 = pas de format “best-of” dans un set
-              </small>
-            </label>
+          <div style={{ ...card }}>
+            <div style={{ fontWeight: 800, marginBottom: 6, color: "#e9e9ef" }}>Legs à gagner (par set)</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {LEG_CHOICES.map((n) => (
+                <button key={n} onClick={() => setLegsPerSet(n)} style={pill(legsPerSet === n)}>
+                  {n}
+                </button>
+              ))}
+            </div>
+            <div style={{ ...sub, marginTop: 6 }}>1 = pas de best-of dans un set</div>
           </div>
         </div>
 
-        <PlayerPicker
-          profiles={profiles}
-          value={sel}
-          onChange={setSel}
-          titleLeft="Joueurs disponibles"
-          titleRight="Joueurs sélectionnés"
-        />
+        {/* Options */}
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <label style={checkLabel}>
+            <input type="checkbox" checked={randomOrder} onChange={(e) => setRandomOrder(e.target.checked)} />
+            <span>Ordre aléatoire au lancement</span>
+          </label>
 
-        <div className="row-between" style={{ marginTop: 12 }}>
-          <button className="btn" onClick={() => history.back()}>
+          <label style={checkLabel}>
+            <input type="checkbox" checked={officialMatch} onChange={(e) => setOfficialMatch(e.target.checked)} />
+            <span>Mode match officiel (serve alterné)</span>
+          </label>
+
+          <label style={checkLabel}>
+            <input type="checkbox" checked={voiceOn} onChange={(e) => setVoiceOn(e.target.checked)} />
+            <span>Voix (TTS)</span>
+          </label>
+
+          <label style={checkLabel}>
+            <input type="checkbox" checked={sfxOn} onChange={(e) => setSfxOn(e.target.checked)} />
+            <span>Sons arcade</span>
+          </label>
+        </div>
+
+        <div style={{ ...sub, marginTop: 8 }}>
+          Astuce : <b>Legs</b> = manches dans un set. <b>Sets</b> = séries de legs.
+          L’affichage in-game est <b>Set i/N</b> et <b>Leg j/N</b>.
+        </div>
+      </div>
+
+      {/* Boutons + Joueurs sélectionnés */}
+      <div style={{ ...card, marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,.14)",
+              background: "transparent",
+              color: "#eee",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
             Annuler
           </button>
-          <button className="btn ok" onClick={launch}>
+          <button
+            onClick={handleStart}
+            disabled={!selected.length}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid transparent",
+              background: selected.length
+                ? "linear-gradient(180deg, #2ed573, #18c66b)"
+                : "linear-gradient(180deg, #3a3a3e, #333338)",
+              color: selected.length ? "#141417" : "#9a9aa0",
+              fontWeight: 900,
+              cursor: selected.length ? "pointer" : "not-allowed",
+              boxShadow: selected.length ? "0 0 24px rgba(30,220,120,.25)" : "none",
+            }}
+          >
             Lancer la partie
           </button>
         </div>
-      </Section>
 
-      <RulesModal open={openRules} onClose={() => setOpenRules(false)} title="Règles — X01">
-        Départ au score choisi. Bust si score &lt; 0 ou = 1.
-        <br />
-        Sortie en double si l’option est activée (D ou Bull 50).
-        <br />
-        Le premier joueur à atteindre 0 gagne la manche.
-        <br />
-        <br />
-        <strong>Format du match :</strong> vous pouvez activer les <em>sets</em> (plusieurs
-        manches à gagner) et/ou les <em>legs</em> à gagner par set. Une valeur de <code>1</code>{" "}
-        signifie que la dimension correspondante est désactivée.
-      </RulesModal>
+        <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Joueurs sélectionnés</div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(56px, 1fr))",
+            gap: 10,
+            marginBottom: 12,
+            minHeight: 56,
+          }}
+        >
+          {selected.map((p) => (
+            <div key={p.id} style={{ textAlign: "center" }}>
+              <div
+                title={p.name}
+                onClick={() => removePlayer(p)}
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: "50%",
+                  overflow: "hidden",
+                  border: "2px solid rgba(255,200,80,.45)",
+                  boxShadow: "0 6px 18px rgba(255,195,26,.2)",
+                  margin: "0 auto",
+                  cursor: "pointer",
+                  background: "rgba(255,255,255,.06)",
+                }}
+              >
+                {p.avatarDataUrl ? (
+                  <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : (
+                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 800 }}>?</div>
+                )}
+              </div>
+            </div>
+          ))}
+          {!selected.length && <div style={{ color: "#aab", fontSize: 12 }}>Aucun joueur sélectionné</div>}
+        </div>
+
+        {/* Joueurs disponibles */}
+        <div style={{ fontWeight: 900, color: "#ffcf57", marginBottom: 8 }}>Joueurs disponibles</div>
+        <div>
+          {available.map((p) => (
+            <div
+              key={p.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "10px 12px",
+                borderRadius: 12,
+                background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                border: "1px solid rgba(255,255,255,.07)",
+                marginBottom: 6,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: "50%",
+                    overflow: "hidden",
+                    background: "rgba(255,255,255,.06)",
+                    flex: "0 0 auto",
+                  }}
+                >
+                  {p.avatarDataUrl ? (
+                    <img src={p.avatarDataUrl as string} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontWeight: 700, fontSize: 12 }}>?</div>
+                  )}
+                </div>
+                <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
+              </div>
+              <button
+                onClick={() => addPlayer(p)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,200,80,.35)",
+                  background: "transparent",
+                  color: "#ffcf57",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                Ajouter
+              </button>
+            </div>
+          ))}
+          {!available.length && <div style={{ color: "#aab", fontSize: 12 }}>Tous les joueurs sont sélectionnés</div>}
+        </div>
+      </div>
     </div>
   );
 }
+
+/* --- Styles partagés --- */
+const selectStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  background: "linear-gradient(180deg, rgba(24,24,28,.7), rgba(18,18,22,.7))",
+  border: "1px solid rgba(255,255,255,.12)",
+  color: "#e9e9ef",
+  fontWeight: 700,
+};
+
+const checkLabel: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  color: "#e9e9ef",
+  fontSize: 13,
+};

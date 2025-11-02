@@ -12,7 +12,8 @@
 // + Commit auto des stats globales à chaque fin de manche (commitLegStatsOnce)
 // + SFX intégrés (double/triple/bull/DBull/180 + touches Keypad)
 // + Log de volées + computeLegStats()/aggregateMatch()
-// + Affichage Set/Leg — joueurs & header
+// + Affichage Set/Leg — joueurs & header (depuis le hook)
+// ❗️Paramétrage en amont (X01Setup) + lecture robuste (router/global)
 // ============================================
 import React from "react";
 import { useX01Engine } from "../hooks/useX01Engine";
@@ -26,7 +27,7 @@ import { History, type SavedMatch } from "../lib/history";
 // Pont “stats unifiées”
 import { mergeLegToBasics } from "../lib/statsBridge";
 
-// Stats locales/riche (live + fin de manche)
+// Stats locales riches
 import { commitLegStatsOnce } from "../lib/statsOnce";
 import { saveMatchStats, computeLegStats, aggregateMatch } from "../lib/stats";
 import type { Visit, LegInput, LegStats as RichLegStats } from "../lib/stats";
@@ -43,14 +44,15 @@ import type {
 
 type EnginePlayer = { id: string; name: string };
 type RankItem = { id: string; name: string; score: number };
+type Mode = "simple" | "double" | "master";
 
-/* ---- Dimensions & layout global (alignement) ---- */
+/* ---- Dimensions & layout ---- */
 const NAV_HEIGHT = 64;
 const KEYPAD_HEIGHT = 260;
 const KEYPAD_SCALE = 0.88;
-const CONTENT_MAX = 520; // largeur de contenu commune → aligne tous les blocs
+const CONTENT_MAX = 520;
 
-/* ====== Compaction UI (header + liste joueurs) ====== */
+/* ---- UI tweaks ---- */
 const HEADER_SCALE = 0.94;
 const AVATAR_SIZE = 108;
 const MINI_CARD_HEIGHT = 86;
@@ -62,6 +64,57 @@ const PLAYER_ROW_PAD_Y = 8;
 const PLAYER_ROW_GAP = 10;
 const PLAYERS_BLOCK_PADDING = 10;
 const PLAYERS_LIST_MAX_H_VH = 32;
+
+/* ---------------------------------------------
+   Lecture robuste des paramètres de départ
+----------------------------------------------*/
+type StartParams = {
+  playerIds: string[];
+  start: 301 | 501 | 701 | 901;
+  outMode?: Mode;
+  inMode?: Mode;
+  setsToWin?: number;
+  legsPerSet?: number;
+  finishPolicy?: FinishPolicy;
+  officialMatch?: boolean;
+  resume?: X01Snapshot | null;
+};
+function readStartParams(
+  propIds: string[] | undefined,
+  propStart: 301 | 501 | 701 | 901 | undefined,
+  propOut: Mode | undefined,
+  propIn: Mode | undefined,
+  propSets?: number,
+  propLegs?: number,
+  params?: any
+): StartParams {
+  const fromProps: Partial<StartParams> = {
+    playerIds: propIds || [],
+    start: (propStart as any) || 501,
+    outMode: propOut,
+    inMode: propIn,
+    setsToWin: propSets,
+    legsPerSet: propLegs,
+  };
+  const fromParams: Partial<StartParams> = (params?.startParams ?? {}) as Partial<StartParams>;
+  const fromGlobal: Partial<StartParams> =
+    (typeof window !== "undefined" && (window as any).__x01StartParams) || {};
+
+  const merged: StartParams = {
+    playerIds: fromParams.playerIds ?? fromGlobal.playerIds ?? fromProps.playerIds ?? [],
+    start: (fromParams.start ?? fromGlobal.start ?? fromProps.start ?? 501) as 301 | 501 | 701 | 901,
+    outMode: (fromParams.outMode ?? fromGlobal.outMode ?? fromProps.outMode ?? "double") as Mode,
+    inMode: (fromParams.inMode ?? fromGlobal.inMode ?? fromProps.inMode ?? "simple") as Mode,
+    setsToWin: fromParams.setsToWin ?? fromGlobal.setsToWin ?? fromProps.setsToWin ?? 1,
+    legsPerSet: fromParams.legsPerSet ?? fromGlobal.legsPerSet ?? fromProps.legsPerSet ?? 1,
+    finishPolicy: (fromParams.finishPolicy ??
+      fromGlobal.finishPolicy ??
+      ("firstToZero" as FinishPolicy)) as FinishPolicy,
+    officialMatch: fromParams.officialMatch ?? fromGlobal.officialMatch ?? false,
+    resume: (fromParams.resume ?? fromGlobal.resume ?? null) as X01Snapshot | null,
+  };
+  return merged;
+}
 
 /* ---------------------------------------------
    Helpers commit Fin de manche (compat Legacy/New)
@@ -82,51 +135,34 @@ function pickWinnerId(res: LegacyLegResultLite | import("../lib/stats").LegStats
 function pickLegNo(res: LegacyLegResultLite | import("../lib/stats").LegStats) {
   return isNewLegStats(res) ? res.legNo : res.legNo;
 }
-
-/** Commit immédiat d’une manche finie (stats unifiées + historique) */
 async function commitFinishedLeg(opts: {
   result: LegacyLegResultLite | import("../lib/stats").LegStats;
   resumeId?: string | null;
   kind?: "x01" | "cricket" | string;
 }) {
   const { result, resumeId, kind = "x01" } = opts;
-
-  try {
-    await mergeLegToBasics(result);
-  } catch (e) {
-    console.warn("[statsBridge] mergeLegToBasics failed:", e);
-  }
-
+  try { await mergeLegToBasics(result); } catch (e) { console.warn("[statsBridge] mergeLegToBasics failed:", e); }
   try {
     const id = resumeId || (crypto.randomUUID?.() ?? String(Date.now()));
     const winnerId = pickWinnerId(result);
     const legNo = pickLegNo(result);
     await History.upsert({
-      id,
-      kind,
-      status: "finished",
-      updatedAt: Date.now(),
-      winnerId,
-      summary: { legNo, winnerId },
-      payload: result,
+      id, kind, status: "finished", updatedAt: Date.now(), winnerId,
+      summary: { legNo, winnerId }, payload: result,
     } as unknown as SavedMatch);
-  } catch (e) {
-    console.warn("[history] upsert failed:", e);
-  }
+  } catch (e) { console.warn("[history] upsert failed:", e); }
 }
 
 /* ---------------------------------------------
-   Helper local (compat) pour fabriquer un MatchRecord
+   Helper local pour fabriquer un MatchRecord
 ----------------------------------------------*/
 function makeX01RecordFromEngineCompat(args: {
   engine: {
-    rules: { start: number; doubleOut: boolean; setsToWin?: number; legsPerSet?: number };
+    rules: { start: number; doubleOut: boolean; setsToWin?: number; legsPerSet?: number; outMode?: Mode; inMode?: Mode };
     players: EnginePlayer[];
     scores: number[];
     currentIndex: number;
     dartsThisTurn: UIDart[];
-    sets?: number[] | undefined;
-    legs?: number[] | undefined;
     winnerId: string | null;
   };
   existingId?: string;
@@ -139,8 +175,6 @@ function makeX01RecordFromEngineCompat(args: {
       scores: engine.scores,
       currentIndex: engine.currentIndex,
       dartsThisTurn: engine.dartsThisTurn,
-      sets: engine.sets,
-      legs: engine.legs,
       winnerId: engine.winnerId,
     },
     kind: "x01",
@@ -178,11 +212,7 @@ function isDoubleFinish(darts: UIDart[]): boolean {
   return last.mult === 2;
 }
 function safeGetLocalStorage(key: string) {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
+  try { return localStorage.getItem(key); } catch { return null; }
 }
 function createAudio(urls: string[]) {
   const a = new Audio();
@@ -196,7 +226,7 @@ function createAudio(urls: string[]) {
   return a;
 }
 
-/* ---- Checkout suggestion (une route) ---- */
+/* ---- Checkout (raccourci minimal) ---- */
 const SINGLE_SET = new Set<number>([...Array(20).keys()].map((n) => n + 1).concat([25, 50]));
 function suggestCheckout(rest: number, doubleOut: boolean, dartsLeft: 1 | 2 | 3): string[] {
   if (rest < 2 || rest > 170) return [];
@@ -210,172 +240,41 @@ function suggestCheckout(rest: number, doubleOut: boolean, dartsLeft: 1 | 2 | 3)
       return [];
     }
   }
-  const doubleMap: Record<number, string[]> = {
-    170: ["T20 T20 D25"],
-    167: ["T20 T19 D25"],
-    164: ["T20 T18 D25"],
-    161: ["T20 T17 D25"],
-    160: ["T20 T20 D20"],
-    158: ["T20 T20 D19"],
-    157: ["T20 T19 D20"],
-    156: ["T20 T20 D18"],
-    155: ["T20 T19 D19"],
-    154: ["T20 T18 D20"],
-    153: ["T20 T19 D18"],
-    152: ["T20 T20 D16"],
-    151: ["T20 T17 D20"],
-    150: ["T20 T18 D18", "T20 T20 D15"],
-    149: ["T20 T19 D16"],
-    148: ["T20 T16 D20", "T20 T20 D14"],
-    147: ["T20 T17 D18"],
-    146: ["T20 T18 D16"],
-    145: ["T20 T15 D20", "T20 T19 D14"],
-    144: ["T20 T20 D12", "T20 T16 D18"],
-    143: ["T20 T17 D16"],
-    142: ["T20 T14 D20", "T20 T18 D14"],
-    141: ["T20 T19 D12"],
-    140: ["T20 T20 D10"],
-    139: ["T20 T13 D20", "T20 T19 D11"],
-    138: ["T20 T18 D12"],
-    137: ["T20 T15 D16", "T19 T16 D16"],
-    136: ["T20 T20 D8"],
-    135: ["T20 T17 D12", "BULL T15 D20"],
-    134: ["T20 T14 D16", "T20 T16 D13"],
-    133: ["T20 T19 D8", "BULL T19 D13"],
-    132: ["T20 T16 D12", "BULL T14 D20"],
-    131: ["T20 T13 D16", "T19 T16 D14"],
-    130: ["T20 T18 D8", "T20 20 D25"],
-    129: ["T19 T16 D12", "19 T20 BULL"],
-    128: ["T18 T14 D16", "T20 T16 D10"],
-    127: ["T20 T17 D8", "T19 20 BULL"],
-    126: ["T19 T19 D6", "T19 19 BULL"],
-    125: ["25 T20 D20", "BULL 25 50"],
-    124: ["T20 T16 D8", "T19 T19 D8"],
-    123: ["T19 T16 D9", "T19 16 BULL"],
-    122: ["T18 T18 D7", "T18 18 BULL"],
-    121: ["T20 11 D25", "T19 14 D25"],
-    120: ["T20 20 D20"],
-    119: ["T19 10 D25", "T19 12 D25"],
-    118: ["T20 18 D20", "T20 10 D24"],
-    117: ["T20 17 D20", "T19 20 D20"],
-    116: ["T20 16 D20", "T19 19 D20"],
-    115: ["T20 15 D20", "T19 18 D20"],
-    114: ["T20 14 D20", "T19 17 D20"],
-    113: ["T20 13 D20", "T19 16 D20"],
-    112: ["T20 12 D20", "T20 20 D16"],
-    111: ["T20 11 D20", "T19 14 D20"],
-    110: ["T20 10 D20", "T20 18 D16"],
-    109: ["T20 9 D20"],
-    108: ["T20 16 D16"],
-    107: ["T19 18 D16", "T20 15 D16"],
-    106: ["T20 14 D16"],
-    105: ["T20 13 D16", "T19 16 D16"],
-    104: ["T18 18 D16"],
-    103: ["T20 11 D16"],
-    102: ["T20 10 D16"],
-    101: ["T20 9 D16"],
-    100: ["T20 D20"],
-    99: ["T19 10 D16"],
-    98: ["T20 D19"],
-    97: ["T19 D20"],
-    96: ["T20 D18"],
-    95: ["T19 D19"],
-    94: ["T18 D20"],
-    93: ["T19 D18"],
-    92: ["T20 D16"],
-    91: ["T17 D20"],
-    90: ["T18 D18", "BULL D20"],
-    89: ["T19 D16"],
-    88: ["T16 D20"],
-    87: ["T17 D18"],
-    86: ["T18 D16"],
-    85: ["T15 D20"],
-    84: ["T16 D18"],
-    83: ["T17 D16"],
-    82: ["BULL D16"],
-    81: ["T15 D18"],
-    80: ["T20 D10", "S20 D20"],
-    79: ["T19 D11"],
-    78: ["T18 D12"],
-    77: ["T19 D10"],
-    76: ["T20 D8"],
-    75: ["T17 D12"],
-    74: ["T14 D16"],
-    73: ["T19 D8"],
-    72: ["T16 D12"],
-    71: ["T13 D16"],
-    70: ["T20 D5", "S20 D25"],
-    69: ["T19 D6"],
-    68: ["T20 D4"],
-    67: ["T17 D8"],
-    66: ["T10 D18"],
-    65: ["T11 D16"],
-    64: ["T16 D8"],
-    63: ["T13 D12"],
-    62: ["T10 D16"],
-    61: ["T15 D8"],
-    60: ["S20 D20"],
-    58: ["S18 D20"],
-    57: ["S17 D20"],
-    56: ["S16 D20"],
-    55: ["S15 D20"],
-    54: ["S14 D20"],
-    53: ["S13 D20"],
-    52: ["S12 D20"],
-    51: ["S11 D20"],
-    50: ["S10 D20", "BULL"],
-    49: ["S9 D20"],
-  };
-
-  if (doubleOut) {
-    const routes = (doubleMap[rest] ?? [])
-      .filter((r) => r.split(" ").length <= dartsLeft)
-      .sort((a, b) => a.split(" ").length - b.split(" ").length);
-    return routes.length ? [routes[0]] : [];
-  }
-
+  // (condensé)
   const res: string[] = [];
   const push = (s: string) => res.push(s);
-
-  if (rest <= 50 && SINGLE_SET.has(rest))
-    push(rest === 50 ? "BULL" : rest === 25 ? "25" : `S${rest}`);
-
-  const tryTwo = (label: string, pts: number) => {
-    const r = rest - pts;
-    if (SINGLE_SET.has(r)) push(`${label} S${r}`);
-  };
-  tryTwo("T20", 60);
-  tryTwo("T19", 57);
-  tryTwo("T18", 54);
-  tryTwo("50", 50);
-  tryTwo("25", 25);
-
-  for (let a = 1; a <= 50; a++) {
-    if (!SINGLE_SET.has(a)) continue;
-    const b = rest - a;
-    if (SINGLE_SET.has(b)) {
-      push(`S${a} S${b}`);
-      break;
-    }
+  if (!doubleOut) {
+    if (rest <= 50 && SINGLE_SET.has(rest)) push(rest === 50 ? "BULL" : rest === 25 ? "25" : `S${rest}`);
+    const tryTwo = (label: string, pts: number) => {
+      const r = rest - pts;
+      if (SINGLE_SET.has(r)) push(`${label} S${r}`);
+    };
+    tryTwo("T20", 60); tryTwo("T19", 57); tryTwo("T18", 54); tryTwo("50", 50); tryTwo("25", 25);
+  } else {
+    const map: Record<number, string> = {
+      170: "T20 T20 D25", 167: "T20 T19 D25", 164: "T20 T18 D25", 161: "T20 T17 D25",
+      160: "T20 T20 D20", 158: "T20 T20 D19", 157: "T20 T19 D20", 156: "T20 T20 D18",
+      155: "T20 T19 D19", 154: "T20 T18 D20", 153: "T20 T19 D18", 152: "T20 T20 D16",
+      151: "T20 T17 D20", 150: "T20 T18 D18",
+      140: "T20 T20 D10", 139: "T20 T13 D20", 138: "T20 T18 D12", 137: "T20 T15 D16",
+      136: "T20 T20 D8", 135: "T20 T17 D12",
+      130: "T20 T18 D8", 129: "T19 T16 D12", 128: "T18 T14 D16", 127: "T20 T17 D8",
+      126: "T19 T19 D6", 125: "25 T20 D20", 124: "T20 T16 D8", 123: "T19 T16 D9",
+      122: "T18 T18 D7", 121: "T20 11 D25", 120: "T20 20 D20", 119: "T19 10 D25",
+      118: "T20 18 D20", 117: "T20 17 D20", 116: "T20 16 D20", 115: "T20 15 D20",
+      110: "T20 10 D20", 109: "T20 9 D20", 108: "T20 16 D16", 107: "T19 18 D16",
+      101: "T20 9 D16", 100: "T20 D20", 99: "T19 10 D16", 98: "T20 D19", 97: "T19 D20",
+      96: "T20 D18", 95: "T19 D19", 94: "T18 D20", 93: "T19 D18", 92: "T20 D16",
+      91: "T17 D20", 90: "T18 D18", 89: "T19 D16", 88: "T16 D20", 87: "T17 D18",
+      86: "T18 D16", 85: "T15 D20", 84: "T16 D18", 83: "T17 D16", 82: "BULL D16",
+      81: "T15 D18", 80: "T20 D10", 79: "T19 D11", 78: "T18 D12", 77: "T19 D10",
+      76: "T20 D8", 75: "T17 D12", 74: "T14 D16", 73: "T19 D8", 72: "T16 D12",
+      71: "T13 D16", 70: "T20 D5",
+    };
+    const best = map[rest];
+    if (best && best.split(" ").length <= dartsLeft) res.push(best);
   }
-  const tryThree = (l1: string, s1: number, l2: string, s2: number) => {
-    const r = rest - s1 - s2;
-    if (SINGLE_SET.has(r)) push(`${l1} ${l2} S${r}`);
-  };
-  tryThree("T20", 60, "T20", 60);
-  tryThree("T20", 60, "T19", 57);
-  tryThree("T20", 60, "T18", 54);
-  tryThree("50", 50, "T20", 60);
-  tryThree("50", 50, "T19", 57);
-  tryThree("50", 50, "T18", 54);
-  tryThree("25", 25, "T20", 60);
-  tryThree("25", 25, "T19", 57);
-  tryThree("25", 25, "T18", 54);
-
-  const filtered = res
-    .filter((r) => r.split(" ").length <= dartsLeft)
-    .sort((a, b) => a.split(" ").length - b.split(" ").length);
-  return filtered.length ? [filtered[0]] : [];
+  return res.slice(0, 1);
 }
 
 /* --------- Composant --------- */
@@ -383,45 +282,55 @@ export default function X01Play({
   profiles = [],
   playerIds = [],
   start = 501,
-  doubleOut = true,
+  outMode = "double",
+  inMode = "simple",
   onFinish,
   onExit,
   params,
-  setsToWin,
-  legsPerSet,
+  setsToWin = 1,
+  legsPerSet = 1,
 }: {
   profiles?: Profile[];
   playerIds?: string[];
-  start?: 301 | 501 | 701 | 1001;
-  doubleOut?: boolean;
+  start?: 301 | 501 | 701 | 901;
+  outMode?: Mode;
+  inMode?: Mode;
   onFinish: (m: MatchRecord) => void;
   onExit: () => void;
-  params?: { resumeId?: string } | any;
+  params?: { resumeId?: string; startParams?: StartParams } | any;
   setsToWin?: number;
   legsPerSet?: number;
 }) {
+  // ======= Fusion finale des paramètres (props/params/global) =======
+  const merged = readStartParams(
+    playerIds,
+    start as any,
+    outMode,
+    inMode,
+    setsToWin,
+    legsPerSet,
+    params
+  );
+  const effectivePlayerIds = merged.playerIds;
+  const startScore = merged.start;
+  const outM = merged.outMode as Mode;
+  const inM = merged.inMode as Mode;
+  const setsTarget = merged.setsToWin ?? 1;
+  const legsTarget = merged.legsPerSet ?? 1;
+  const finishPref = merged.finishPolicy as FinishPolicy;
+
   const resumeId: string | undefined = params?.resumeId;
 
-  const settingsX01 = React.useMemo(() => {
-    try {
-      const raw = safeGetLocalStorage("settings_x01");
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  }, []);
-  const setsTarget = Math.max(1, Number(setsToWin ?? settingsX01?.setsToWin ?? 1));
-  const legsTarget = Math.max(1, Number(legsPerSet ?? settingsX01?.legsPerSet ?? 1));
-
-  // Reprise snapshot X01
+  // Reprise snapshot X01 (depuis l’historique ou via merged.resume)
   const resumeSnapshot = React.useMemo<X01Snapshot | null>(() => {
+    if (merged.resume) return merged.resume as X01Snapshot;
     if (!resumeId) return null;
     const rec: SavedMatch | null | undefined =
       (History as any).getX01 ? (History as any).getX01(resumeId) : History.get(resumeId);
     if (!rec || rec.kind !== "x01") return null;
     const snap = (rec.payload as any)?.state as X01Snapshot | undefined;
     return snap ?? null;
-  }, [resumeId]);
+  }, [resumeId, merged.resume]);
 
   // ===== Overlay de manche + stats riches
   const [lastLegResult, setLastLegResult] = React.useState<LegResult | null>(null);
@@ -456,15 +365,9 @@ export default function X01Play({
 
   // ===== onFinish différé
   const [pendingFinish, setPendingFinish] = React.useState<MatchRecord | null>(null);
+  const defaultFinishPolicy: FinishPolicy = finishPref ?? ((safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy);
 
-  const defaultFinishPolicy: FinishPolicy = (
-    (safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy
-  );
-
-  // Compteurs Set/Leg (affichage)
-  const [currentSet, setCurrentSet] = React.useState(1);
-  const [currentLegInSet, setCurrentLegInSet] = React.useState(1);
-
+  // ====== Hook moteur (⚠️ propage outMode/inMode + set/leg)
   const {
     state,
     currentPlayer,
@@ -477,41 +380,37 @@ export default function X01Play({
     continueAfterFirst,
     endNow,
     isContinuing,
+
+    // Sets/Legs exposés par le hook
+    currentSet,
+    currentLegInSet,
   } = useX01Engine({
     profiles,
-    playerIds,
-    start,
-    doubleOut,
+    playerIds: effectivePlayerIds,
+    start: startScore,
+    doubleOut: outM !== "simple",
     onFinish: (m: MatchRecord) => {
       if (overlayOpen || pendingFinish) setPendingFinish(m);
       else onFinish(m);
     },
-    // @ts-ignore
     resume: resumeSnapshot,
     finishPolicy: defaultFinishPolicy,
-
-    // Fin de manche
+    setsToWin: setsTarget,
+    legsPerSet: legsTarget,
+    outMode: outM,
+    inMode: inM,
     onLegEnd: async (res: LegResult) => {
-      setCurrentLegInSet((x) => {
-        const next = x + 1;
-        if (next > legsTarget) {
-          setCurrentSet((s) => s + 1);
-          return 1;
-        }
-        return next;
-      });
-
       setLastLegResult(res);
       setOverlayOpen(true);
 
       let enriched: any = res;
       try {
         const legInput: LegInput = {
-          startScore: start,
+          startScore: startScore,
           players: ((state.players || []) as { id: string }[]).map((p) => p.id),
           visits: visitsLog,
           finishedAt: Date.now(),
-          legNo: res.legNo ?? currentLegInSet,
+          legNo: res.legNo ?? 1,
           winnerId: res.winnerId ?? null,
         };
         const legStats: RichLegStats = computeLegStats(legInput);
@@ -522,11 +421,7 @@ export default function X01Play({
       }
 
       try {
-        await commitFinishedLeg({
-          result: enriched as any,
-          resumeId,
-          kind: "x01",
-        });
+        await commitFinishedLeg({ result: enriched as any, resumeId, kind: "x01" });
       } catch (e) {
         console.warn("commitFinishedLeg failed:", e);
       }
@@ -538,18 +433,15 @@ export default function X01Play({
 
   // Historique id
   const historyIdRef = React.useRef<string | undefined>(resumeId);
-  const matchIdRef = React.useRef<string>(
-    resumeId ?? (crypto.randomUUID?.() ?? String(Date.now()))
-  );
+  const matchIdRef = React.useRef<string>(resumeId ?? (crypto.randomUUID?.() ?? String(Date.now())));
 
-  // Commit auto stats globales
+  // Commit auto stats globales (basics) à chaque fin de manche
   React.useEffect(() => {
     if (!lastLegResult) return;
     const res = lastLegResult;
 
     const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id,
-      name: p.name,
+      id: p.id, name: p.name,
     }));
 
     const legId = `${matchIdRef.current || "local"}::set#${currentSet}::leg#${res.legNo || currentLegInSet}`;
@@ -563,10 +455,7 @@ export default function X01Play({
       const pointsScored = Math.round(avg3 * visits);
 
       perPlayer[pid] = {
-        dartsThrown,
-        pointsScored,
-        visits,
-        avg3,
+        dartsThrown, pointsScored, visits, avg3,
         bestVisit: (res.bestVisit as any)?.[pid] || 0,
         highestCheckout: (res.bestCheckout as any)?.[pid] || 0,
         tons60: (res.h60 as any)?.[pid] || 0,
@@ -590,22 +479,17 @@ export default function X01Play({
     });
   }, [lastLegResult, state.players, currentSet, currentLegInSet]);
 
-  // Persistance après lancer (reprise en cours)
+  // Persistance “en cours”
   function buildEngineLike(dartsThisTurn: UIDart[], winnerId?: string | null) {
-    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id,
-      name: p.name,
-    }));
-    const scores: number[] = playersArr.map((p) => scoresByPlayer[p.id] ?? start);
+    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map((p) => ({ id: p.id, name: p.name }));
+    const scores: number[] = playersArr.map((p) => scoresByPlayer[p.id] ?? startScore);
     const idx = playersArr.findIndex((p) => p.id === (currentPlayer?.id as string));
     return {
-      rules: { start, doubleOut, setsToWin: setsTarget, legsPerSet: legsTarget },
+      rules: { start: startScore, doubleOut: outM !== "simple", setsToWin: setsTarget, legsPerSet: legsTarget, outMode: outM, inMode: inM },
       players: playersArr,
       scores,
       currentIndex: idx >= 0 ? idx : 0,
       dartsThisTurn,
-      sets: undefined,
-      legs: undefined,
       winnerId: winnerId ?? null,
     };
   }
@@ -633,17 +517,11 @@ export default function X01Play({
   const [pointsSum, setPointsSum] = React.useState<Record<string, number>>({});
   const [visitsCount, setVisitsCount] = React.useState<Record<string, number>>({});
   const [bestVisitByPlayer, setBestVisitByPlayer] = React.useState<Record<string, number>>({});
-  const [hitsByPlayer, setHitsByPlayer] = React.useState<
-    Record<string, { h60: number; h100: number; h140: number; h180: number }>
-  >({});
-  const [impactByPlayer, setImpactByPlayer] = React.useState<
-    Record<string, { doubles: number; triples: number; bulls: number }>
-  >({});
+  const [hitsByPlayer, setHitsByPlayer] = React.useState<Record<string, { h60: number; h100: number; h140: number; h180: number }>>({});
+  const [impactByPlayer, setImpactByPlayer] = React.useState<Record<string, { doubles: number; triples: number; bulls: number }>>({});
 
   type Bucket = { inner: number; outer: number; double: number; triple: number; miss: number };
-  const [perPlayerBuckets, setPerPlayerBuckets] = React.useState<
-    Record<string, Record<string, Bucket>>
-  >({});
+  const [perPlayerBuckets, setPerPlayerBuckets] = React.useState<Record<string, Record<string, Bucket>>>({});
 
   // SFX
   const dartHit = React.useMemo(() => createAudio(["/sounds/dart-hit.mp3", "/sounds/dart-hit.ogg"]), []);
@@ -652,10 +530,7 @@ export default function X01Play({
 
   function playDartSfx(d: UIDart, nextThrow: UIDart[]) {
     const visitSum = nextThrow.reduce((s, x) => s + dartValue(x), 0);
-    if (nextThrow.length === 3 && visitSum === 180) {
-      playSound("180");
-      return;
-    }
+    if (nextThrow.length === 3 && visitSum === 180) { playSound("180"); return; }
     if (d.v === 25 && d.mult === 2) return playSound("doublebull");
     if (d.v === 25 && d.mult === 1) return playSound("bull");
     if (d.mult === 3) return playSound("triple");
@@ -673,7 +548,7 @@ export default function X01Play({
   const [multiplier, setMultiplier] = React.useState<1 | 2 | 3>(1);
   const [playersOpen, setPlayersOpen] = React.useState(true);
 
-  const currentRemaining = scoresByPlayer[(currentPlayer?.id as string) || ""] ?? start;
+  const currentRemaining = scoresByPlayer[(currentPlayer?.id as string) || ""] ?? startScore;
   const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
   const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
 
@@ -704,11 +579,14 @@ export default function X01Play({
 
     const volleyPts = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const after = currentRemaining - volleyPts;
+
     let willBust = after < 0;
-    if (!willBust && doubleOut && after === 0) willBust = !isDoubleFinish(currentThrow);
+    const needDoubleOut = outM !== "simple";
+    if (!willBust && needDoubleOut && after === 0) willBust = !isDoubleFinish(currentThrow);
+
     const ptsForStats = willBust ? 0 : volleyPts;
 
-    // Logger la volée
+    // Log visite
     {
       const isCheckout = !willBust && after === 0;
       pushVisitLog({
@@ -746,13 +624,12 @@ export default function X01Play({
     });
     setPerPlayerBuckets((m) => {
       const cur = m[currentPlayer.id] || {};
-      const key = "leg-1";
+      const key = `set-${currentSet}-leg-${currentLegInSet}`;
       const b = cur[key] || { inner: 0, outer: 0, double: 0, triple: 0, miss: 0 };
       for (const d of currentThrow) {
         if (d.v === 0) b.miss++;
-        else if (d.v === 25) {
-          if (d.mult === 2) { b.inner++; b.double++; } else b.outer++;
-        } else if (d.mult === 2) b.double++;
+        else if (d.v === 25) { if (d.mult === 2) { b.inner++; b.double++; } else b.outer++; }
+        else if (d.mult === 2) b.double++;
         else if (d.mult === 3) b.triple++;
         else b.outer++;
       }
@@ -768,33 +645,24 @@ export default function X01Play({
     if (willBust) {
       try { bustSnd.currentTime = 0; bustSnd.play(); } catch {}
       (navigator as any).vibrate?.([120, 60, 140]);
-    } else if (voiceOn && "speechSynthesis" in window) {
-      const name = currentPlayer.name || "";
-      const u = new SpeechSynthesisUtterance(`${name}, ${volleyPts} points`);
-      u.rate = 1;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(u);
+    } else {
+      const voice = voiceOn && "speechSynthesis" in window;
+      if (voice) {
+        const u = new SpeechSynthesisUtterance(`${currentPlayer.name || ""}, ${volleyPts} points`);
+        u.rate = 1; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+      }
     }
 
     setCurrentThrow([]);
     setMultiplier(1);
   }
 
-  function handleBackspace() {
-    playSound("dart-hit");
-    setCurrentThrow((t) => t.slice(0, -1));
-  }
-  function handleCancel() {
-    playSound("bust");
-    if (currentThrow.length) setCurrentThrow((t) => t.slice(0, -1));
-    else undoLast?.();
-  }
+  function handleBackspace() { playSound("dart-hit"); setCurrentThrow((t) => t.slice(0, -1)); }
+  function handleCancel() { playSound("bust"); if (currentThrow.length) setCurrentThrow((t) => t.slice(0, -1)); else undoLast?.(); }
 
   const liveRanking = React.useMemo<RankItem[]>(() => {
     const items: RankItem[] = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id,
-      name: p.name,
-      score: scoresByPlayer[p.id] ?? start,
+      id: p.id, name: p.name, score: scoresByPlayer[p.id] ?? startScore,
     }));
     items.sort((a, b) => {
       const az = a.score === 0, bz = b.score === 0;
@@ -803,7 +671,7 @@ export default function X01Play({
       return a.score - b.score;
     });
     return items;
-  }, [state.players, scoresByPlayer, start]);
+  }, [state.players, scoresByPlayer, startScore]);
 
   function chipStyle(d?: UIDart, red = false): React.CSSProperties {
     if (!d)
@@ -822,40 +690,27 @@ export default function X01Play({
   }
 
   const goldBtn: React.CSSProperties = {
-    borderRadius: 10,
-    padding: "6px 12px",
-    border: "1px solid rgba(255,180,0,.3)",
-    background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
-    color: "#1a1a1a",
-    fontWeight: 900,
-    boxShadow: "0 10px 22px rgba(255,170,0,.28)",
-    cursor: "pointer",
+    borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,180,0,.3)",
+    background: "linear-gradient(180deg, #ffc63a, #ffaf00)", color: "#1a1a1a",
+    fontWeight: 900, boxShadow: "0 10px 22px rgba(255,170,0,.28)", cursor: "pointer",
   };
 
-  // utilitaires flush
   const flushPendingFinish = React.useCallback(() => {
     if (pendingFinish) {
       const m: MatchRecord = pendingFinish;
-      setPendingFinish(null);
-      setOverlayOpen(false);
-      onFinish(m);
-      return;
+      setPendingFinish(null); setOverlayOpen(false); onFinish(m); return;
     }
     const rec: MatchRecord = makeX01RecordFromEngineCompat({
       engine: buildEngineLike([], winner?.id ?? null),
       existingId: historyIdRef.current,
     });
-    History.upsert(rec);
-    historyIdRef.current = rec.id;
-    onFinish(rec);
+    History.upsert(rec); historyIdRef.current = rec.id; onFinish(rec);
   }, [pendingFinish, onFinish, winner?.id]);
 
   if (!state.players?.length) {
     return (
       <div style={{ padding: 16, maxWidth: CONTENT_MAX, margin: "0 auto" }}>
-        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
-          ← Quitter
-        </button>
+        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>← Quitter</button>
         <p>Aucun joueur sélectionné. Reviens au lobby.</p>
       </div>
     );
@@ -864,12 +719,12 @@ export default function X01Play({
   const currentAvatar =
     (currentPlayer && (profileById[currentPlayer.id]?.avatarDataUrl as string | null)) ?? null;
 
-  const curDarts = currentPlayer ? dartsCount[currentPlayer.id] || 0 : 0;
-  const curPts = currentPlayer ? pointsSum[currentPlayer.id] || 0 : 0;
+  const curDarts = currentPlayer ? (dartsCount[currentPlayer.id] || 0) : 0;
+  const curPts = currentPlayer ? (pointsSum[currentPlayer.id] || 0) : 0;
   const curM3D = curDarts > 0 ? ((curPts / curDarts) * 3).toFixed(2) : "0.00";
   const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
 
-  // Fin de match : narration + sauvegarde record + agrégation optionnelle
+  // Fin de match : narration + sauvegardes additionnelles
   const prevIsOver = React.useRef(false);
   React.useEffect(() => {
     const justFinished = !prevIsOver.current && isOver;
@@ -884,16 +739,15 @@ export default function X01Play({
           const m = aggregateMatch([maybeLeg], maybeLeg.players);
           const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]);
           const standing = playersArr
-            .map((p) => ({ id: p.id, score: scoresByPlayer[p.id] ?? start }))
+            .map((p) => ({ id: p.id, score: scoresByPlayer[p.id] ?? startScore }))
             .sort((a, b) => a.score - b.score);
           const rec: any = {
             id: crypto.randomUUID?.() ?? String(Date.now()),
             createdAt: Date.now(),
             rules: {
-              x01Start: start,
-              finishPolicy: doubleOut ? "doubleOut" : "singleOut",
-              setsToWin: setsTarget,
-              legsPerSet: legsTarget,
+              x01Start: startScore,
+              finishPolicy: outM !== "simple" ? "doubleOut" : "singleOut",
+              setsToWin: setsTarget, legsPerSet: legsTarget,
             },
             players: playersArr.map((p) => p.id),
             winnerId: standing[0]?.id ?? winner?.id ?? playersArr[0]?.id,
@@ -906,23 +760,19 @@ export default function X01Play({
       }
     }
 
-    if (!justFinished || !voiceOn || !("speechSynthesis" in window)) return;
+    const voice = (safeGetLocalStorage("opt_voice") ?? "true") === "true";
+    if (!justFinished || !voice || !("speechSynthesis" in window)) return;
     const ords = ["", "Deuxième", "Troisième", "Quatrième", "Cinquième", "Sixième", "Septième", "Huitième"];
     const ordered = [...liveRanking].sort((a, b) => {
       const az = a.score === 0, bz = b.score === 0;
-      if (az && !bz) return -1;
-      if (!az && bz) return 1;
-      return a.score - b.score;
+      if (az && !bz) return -1; if (!az && bz) return 1; return a.score - b.score;
     });
     const parts: string[] = [];
     if (ordered[0]) parts.push(`Victoire ${ordered[0].name}`);
     for (let i = 1; i < ordered.length && i < 8; i++) parts.push(`${ords[i]} ${ordered[i].name}`);
     const text = parts.join(". ") + ".";
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(u);
-  }, [isOver, liveRanking, voiceOn, winner?.id, lastLegResult, state.players, scoresByPlayer, start, doubleOut, setsTarget, legsTarget]);
+    const u = new SpeechSynthesisUtterance(text); u.rate = 1; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+  }, [isOver, liveRanking, winner?.id, lastLegResult, state.players, scoresByPlayer, startScore, setsTarget, legsTarget, outM]);
 
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
 
@@ -936,7 +786,7 @@ export default function X01Play({
     }
   }, [overlayOpen, showEndBanner, bgMusic]);
 
-  // Force overlay si fin match (fallback auto)
+  // Force overlay si fin moteur (fallback si pas de res détaillé)
   React.useEffect(() => {
     if (!isOver) return;
     if (!overlayOpen) setOverlayOpen(true);
@@ -957,7 +807,7 @@ export default function X01Play({
         const dCount = dartsCount[pid] || 0;
         const pSum = pointsSum[pid] || 0;
         const a3d = dCount > 0 ? (pSum / dCount) * 3 : 0;
-        remaining[pid] = scoresByPlayer[pid] ?? start;
+        remaining[pid] = scoresByPlayer[pid] ?? startScore;
         darts[pid] = dCount;
         visits[pid] = visitsCount[pid] || Math.ceil(dCount / 3);
         avg3[pid] = Math.round(a3d * 100) / 100;
@@ -970,8 +820,8 @@ export default function X01Play({
       }
       const order = [...playersArr]
         .sort((a, b) => {
-          const as = remaining[a.id] ?? start;
-          const bs = remaining[b.id] ?? start;
+          const as = remaining[a.id] ?? startScore;
+          const bs = remaining[b.id] ?? startScore;
           if (as === 0 && bs !== 0) return -1;
           if (bs === 0 && as !== 0) return 1;
           if (as !== bs) return as - bs;
@@ -998,31 +848,24 @@ export default function X01Play({
   }, [isOver]);
 
   return (
-    <div
-      className="x01play-container"
-      style={{
-        paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16,
-      }}
-    >
-      {/* Barre haute (alignée) */}
+    <div className="x01play-container" style={{ paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16 }}>
+      {/* Barre haute */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, maxWidth: CONTENT_MAX, marginInline: "auto", paddingInline: 12 }}>
-        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
-          ← Quitter
-        </button>
+        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>← Quitter</button>
         <div />
       </div>
 
-      {/* HEADER sticky — aligné et centré */}
+      {/* HEADER sticky — centré */}
       <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 12 }}>
         <HeaderBlock
           currentPlayer={currentPlayer}
           currentAvatar={(currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null}
           currentRemaining={currentRemaining}
           currentThrow={currentThrow}
-          doubleOut={doubleOut}
+          doubleOut={outM !== "simple"}
           multiplier={multiplier}
           setMultiplier={setMultiplier}
-          start={start}
+          start={startScore}
           scoresByPlayer={scoresByPlayer}
           statePlayers={(state.players || []) as EnginePlayer[]}
           liveRanking={liveRanking}
@@ -1036,7 +879,7 @@ export default function X01Play({
         />
       </div>
 
-      {/* Bloc joueurs (accordéon) — aligné */}
+      {/* Bloc joueurs (accordéon) — centré */}
       <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 12 }}>
         <PlayersBlock
           playersOpen={playersOpen}
@@ -1047,7 +890,7 @@ export default function X01Play({
           lastBustByPlayer={lastBustByPlayer}
           dartsCount={dartsCount}
           pointsSum={pointsSum}
-          start={start}
+          start={startScore}
           scoresByPlayer={scoresByPlayer}
           currentSet={currentSet}
           currentLegInSet={currentLegInSet}
@@ -1059,7 +902,7 @@ export default function X01Play({
       {/* Spacer keypad */}
       <div style={{ height: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 8 }} />
 
-      {/* Keypad FIXED (centré aux mêmes bords) */}
+      {/* Keypad FIXED */}
       <div
         style={{
           position: "fixed",
@@ -1087,9 +930,7 @@ export default function X01Play({
       </div>
 
       {/* Modale CONTINUER ? */}
-      {pendingFirstWin && (
-        <ContinueModal endNow={endNow} continueAfterFirst={continueAfterFirst} />
-      )}
+      {pendingFirstWin && <ContinueModal endNow={endNow} continueAfterFirst={continueAfterFirst} />}
 
       {/* Overlay fin de manche */}
       <EndOfLegOverlay
@@ -1124,9 +965,7 @@ export default function X01Play({
               payload: { ...res, meta: { currentSet, currentLegInSet, setsTarget, legsTarget } },
             } as any);
             (navigator as any).vibrate?.(50);
-          } catch (e) {
-            console.warn("Impossible de sauvegarder la manche:", e);
-          }
+          } catch (e) { console.warn("Impossible de sauvegarder la manche:", e); }
           setOverlayOpen(false);
         }}
       />
@@ -1146,7 +985,6 @@ export default function X01Play({
 
   /* ===== sous-composants internes ===== */
 
-  /** HEADER : Avatar (médaillon fondu) + Nom + Mini-Stats | Centre : score+volée+checkout + chips Set/Leg + mini-classement */
   function HeaderBlock(props: {
     currentPlayer?: EnginePlayer | null;
     currentAvatar: string | null;
@@ -1173,89 +1011,51 @@ export default function X01Play({
     } = props;
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
-    const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
 
-    // style chip Set/Leg
-    const chip = {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "6px 10px",
-      borderRadius: 999,
-      border: "1px solid rgba(255,200,80,.35)",
+    const chip: React.CSSProperties = {
+      display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px",
+      borderRadius: 999, border: "1px solid rgba(255,200,80,.35)",
       background: "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
-      color: "#ffcf57",
-      fontWeight: 800,
-      fontSize: 12,
-      boxShadow: "0 6px 18px rgba(255,195,26,.15)",
-      whiteSpace: "nowrap" as const,
+      color: "#ffcf57", fontWeight: 800, fontSize: 12, boxShadow: "0 6px 18px rgba(255,195,26,.15)", whiteSpace: "nowrap",
     };
 
     return (
       <div
         style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 40,
-          transform: `scale(${HEADER_SCALE})`,
-          transformOrigin: "top center",
-          background:
-            "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.10), transparent 55%), linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.8))",
-          border: "1px solid rgba(255,255,255,.08)",
-          borderRadius: 18,
-          padding: HEADER_OUTER_PADDING,
-          boxShadow: "0 10px 30px rgba(0,0,0,.35)",
-          marginBottom: 10,
+          position: "sticky", top: 0, zIndex: 40, transform: `scale(${HEADER_SCALE})`, transformOrigin: "top center",
+          background: "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.10), transparent 55%), linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.8))",
+          border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: HEADER_OUTER_PADDING,
+          boxShadow: "0 10px 30px rgba(0,0,0,.35)", marginBottom: 10,
         }}
       >
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
           {/* Colonne gauche : Avatar + Nom + Mini-Stats */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
-            {/* Médaillon avatar avec FONDU radial */}
             <div
               style={{
-                padding: 6,
-                borderRadius: "50%",
+                padding: 6, borderRadius: "50%",
                 WebkitMaskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
                 maskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
               }}
             >
               <div
                 style={{
-                  width: AVATAR_SIZE,
-                  height: AVATAR_SIZE,
-                  borderRadius: "50%",
-                  overflow: "hidden",
-                  background: "linear-gradient(180deg, #1b1b1f, #111114)",
-                  boxShadow: "0 8px 28px rgba(0,0,0,.35)", // halo doux, plus d'anneau dur
+                  width: AVATAR_SIZE, height: AVATAR_SIZE, borderRadius: "50%", overflow: "hidden",
+                  background: "linear-gradient(180deg, #1b1b1f, #111114)", boxShadow: "0 8px 28px rgba(0,0,0,.35)",
                 }}
               >
                 {currentAvatar ? (
                   <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 ) : (
-                  <div
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "#999",
-                      fontWeight: 700,
-                    }}
-                  >
-                    ?
-                  </div>
+                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontWeight: 700 }}>?</div>
                 )}
               </div>
             </div>
 
-            {/* Nom sous avatar */}
             <div style={{ fontWeight: 900, fontSize: 18, color: "#ffcf57", letterSpacing: 0.3 }}>
               {currentPlayer?.name ?? "—"}
             </div>
 
-            {/* Mini-Stats épuré */}
             <div style={{ ...miniCard, width: MINI_CARD_WIDTH, height: MINI_CARD_HEIGHT, padding: 8 }}>
               <div style={miniText}>
                 <div>Meilleure volée : <b>{Math.max(0, bestVisit)}</b></div>
@@ -1268,17 +1068,7 @@ export default function X01Play({
 
           {/* Centre : score + volée + checkout + chips Set/Leg + mini-classement */}
           <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-            <div
-              style={{
-                fontSize: 72,
-                lineHeight: 1,
-                fontWeight: 900,
-                color: "#ffcf57",
-                textShadow: "0 4px 20px rgba(255,195,26,.25)",
-                letterSpacing: 0.5,
-                marginTop: 2,
-              }}
-            >
+            <div style={{ fontSize: 72, lineHeight: 1, fontWeight: 900, color: "#ffcf57", textShadow: "0 4px 20px rgba(255,195,26,.25)", letterSpacing: 0.5, marginTop: 2 }}>
               {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
             </div>
 
@@ -1290,67 +1080,42 @@ export default function X01Play({
                 const wouldBust = afterNow < 0 || (doubleOut && afterNow === 0 && !isDoubleFinish(currentThrow.slice(0, i + 1)));
                 const st = chipStyle(d, wouldBust);
                 return (
-                  <span
-                    key={i}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      minWidth: 44,
-                      height: 32,
-                      padding: "0 12px",
-                      borderRadius: 10,
-                      border: st.border as string,
-                      background: st.background as string,
-                      color: st.color as string,
-                      fontWeight: 800,
-                    }}
-                  >
+                  <span key={i} style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    minWidth: 44, height: 32, padding: "0 12px", borderRadius: 10,
+                    border: st.border as string, background: st.background as string, color: st.color as string, fontWeight: 800,
+                  }}>
                     {fmt(d)}
                   </span>
                 );
               })}
             </div>
 
-            {/* Chips Set/Leg déplacés ICI (sous la volée) */}
+            {/* Chips Set/Leg */}
             <div style={{ marginTop: 2, display: "flex", justifyContent: "center" }}>
-              <span style={chip as React.CSSProperties}>
+              <span style={chip}>
                 <span>Set {currentSet}/{setsTarget}</span>
                 <span style={{ opacity: .6 }}>•</span>
                 <span>Leg {currentLegInSet}/{legsTarget}</span>
               </span>
             </div>
 
-            {/* Checkout centré (sous chips) */}
+            {/* Checkout */}
             {(() => {
-              const only = suggestCheckout(predictedAfter, doubleOut, dartsLeft)[0];
+              const only = suggestCheckout(predictedAfter, outM !== "simple", (3 - currentThrow.length) as 1 | 2 | 3)[0];
               if (!only || currentThrow.length >= 3) return null;
               return (
                 <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
-                  <div
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      padding: 6,
-                      borderRadius: 12,
-                      border: "1px solid rgba(255,255,255,.08)",
-                      background: "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
-                      minWidth: 180,
-                      maxWidth: 520,
-                    }}
-                  >
-                    <span
-                      style={{
-                        padding: "4px 8px",
-                        borderRadius: 8,
-                        border: "1px solid rgba(255,187,51,.4)",
-                        background: "rgba(255,187,51,.12)",
-                        color: "#ffc63a",
-                        fontWeight: 900,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
+                  <div style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.08)",
+                    background: "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
+                    minWidth: 180, maxWidth: 520,
+                  }}>
+                    <span style={{
+                      padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(255,187,51,.4)",
+                      background: "rgba(255,187,51,.12)", color: "#ffc63a", fontWeight: 900, whiteSpace: "nowrap",
+                    }}>
                       {only}
                     </span>
                   </div>
@@ -1394,35 +1159,15 @@ export default function X01Play({
     legsTarget: number;
   }) {
     const {
-      playersOpen,
-      setPlayersOpen,
-      statePlayers,
-      profileById,
-      lastByPlayer,
-      lastBustByPlayer,
-      dartsCount,
-      pointsSum,
-      start,
-      scoresByPlayer,
-      currentSet,
-      currentLegInSet,
-      setsTarget,
-      legsTarget,
+      playersOpen, setPlayersOpen, statePlayers, profileById, lastByPlayer, lastBustByPlayer,
+      dartsCount, pointsSum, start, scoresByPlayer, currentSet, currentLegInSet, setsTarget, legsTarget,
     } = props;
 
     const headerChip: React.CSSProperties = {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "6px 10px",
-      borderRadius: 999,
-      border: "1px solid rgba(255,200,80,.32)",
+      display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px",
+      borderRadius: 999, border: "1px solid rgba(255,200,80,.32)",
       background: "linear-gradient(180deg, rgba(255,195,26,.10), rgba(28,28,32,.95))",
-      color: "#ffcf57",
-      fontWeight: 800,
-      fontSize: 12,
-      boxShadow: "0 6px 16px rgba(255,195,26,.12)",
-      whiteSpace: "nowrap",
+      color: "#ffcf57", fontWeight: 800, fontSize: 12, boxShadow: "0 6px 16px rgba(255,195,26,.12)", whiteSpace: "nowrap",
     };
 
     return (
@@ -1436,27 +1181,13 @@ export default function X01Play({
           boxShadow: "0 10px 30px rgba(0,0,0,.35)",
         }}
       >
-        {/* Nouvelle ENTÊTE : JOUEURS + Set/Leg + disclosure */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-            padding: "4px 6px 8px",
-          }}
-        >
+        {/* ENTÊTE : JOUEURS + Set/Leg + disclosure */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 6px 8px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span
-              style={{
-                padding: "6px 10px",
-                borderRadius: 8,
-                background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
-                color: "#151517",
-                fontWeight: 900,
-                letterSpacing: .4,
-              }}
-            >
+            <span style={{
+              padding: "6px 10px", borderRadius: 8, background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+              color: "#151517", fontWeight: 900, letterSpacing: .4,
+            }}>
               JOUEURS
             </span>
 
@@ -1495,43 +1226,17 @@ export default function X01Play({
                 <div
                   key={p.id}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: PLAYER_ROW_GAP,
-                    padding: `${PLAYER_ROW_PAD_Y}px 10px`,
-                    borderRadius: 12,
+                    display: "flex", alignItems: "center", gap: PLAYER_ROW_GAP,
+                    padding: `${PLAYER_ROW_PAD_Y}px 10px`, borderRadius: 12,
                     background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
-                    border: "1px solid rgba(255,255,255,.07)",
-                    marginBottom: 6,
+                    border: "1px solid rgba(255,255,255,.07)", marginBottom: 6,
                   }}
                 >
-                  <div
-                    style={{
-                      width: PLAYER_ROW_AVATAR,
-                      height: PLAYER_ROW_AVATAR,
-                      borderRadius: "50%",
-                      overflow: "hidden",
-                      background: "rgba(255,255,255,.06)",
-                      flex: "0 0 auto",
-                    }}
-                  >
+                  <div style={{ width: PLAYER_ROW_AVATAR, height: PLAYER_ROW_AVATAR, borderRadius: "50%", overflow: "hidden", background: "rgba(255,255,255,.06)", flex: "0 0 auto" }}>
                     {avatarSrc ? (
                       <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     ) : (
-                      <div
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "#999",
-                          fontWeight: 700,
-                          fontSize: 12,
-                        }}
-                      >
-                        ?
-                      </div>
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontWeight: 700, fontSize: 12 }}>?</div>
                     )}
                   </div>
 
@@ -1545,18 +1250,10 @@ export default function X01Play({
                             <span
                               key={i}
                               style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                minWidth: 34,
-                                height: 24,
-                                padding: "0 8px",
-                                borderRadius: 8,
-                                border: st.border as string,
-                                background: st.background as string,
-                                color: st.color as string,
-                                fontWeight: 800,
-                                fontSize: 12,
+                                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                                minWidth: 34, height: 24, padding: "0 8px", borderRadius: 8,
+                                border: st.border as string, background: st.background as string, color: st.color as string,
+                                fontWeight: 800, fontSize: 12,
                               }}
                             >
                               {fmt(d)}
@@ -1589,24 +1286,14 @@ export default function X01Play({
     return (
       <div
         style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,.55)",
-          backdropFilter: "blur(4px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-          padding: 16,
+          position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", backdropFilter: "blur(4px)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16,
         }}
       >
         <div
           style={{
-            width: 460,
-            background: "linear-gradient(180deg, #17181c, #101116)",
-            border: "1px solid rgba(255,255,255,.08)",
-            borderRadius: 16,
-            padding: 18,
+            width: 460, background: "linear-gradient(180deg, #17181c, #101116)",
+            border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: 18,
           }}
         >
           <h3 style={{ margin: "0 0 8px" }}>Continuer la manche ?</h3>
@@ -1616,30 +1303,15 @@ export default function X01Play({
           <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <button
               onClick={endNow}
-              style={{
-                appearance: "none" as const,
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,.14)",
-                background: "transparent",
-                color: "#eee",
-                cursor: "pointer",
-              }}
+              style={{ appearance: "none" as const, padding: "10px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,.14)", background: "transparent", color: "#eee", cursor: "pointer" }}
             >
               Terminer maintenant
             </button>
             <button
               onClick={continueAfterFirst}
               style={{
-                appearance: "none" as const,
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: "1px solid transparent",
-                background: "linear-gradient(180deg, #f0b12a, #c58d19)",
-                color: "#141417",
-                fontWeight: 700,
-                cursor: "pointer",
-                boxShadow: "0 0 24px rgba(240,177,42,.25)",
+                appearance: "none" as const, padding: "10px 14px", borderRadius: 12, border: "1px solid transparent",
+                background: "linear-gradient(180deg, #f0b12a, #c58d19)", color: "#141417", fontWeight: 700, cursor: "pointer", boxShadow: "0 0 24px rgba(240,177,42,.25)",
               }}
             >
               CONTINUER
@@ -1651,11 +1323,7 @@ export default function X01Play({
   }
 
   function EndBanner({
-    winnerName,
-    continueAfterFirst,
-    openOverlay,
-    flushPendingFinish,
-    goldBtn,
+    winnerName, continueAfterFirst, openOverlay, flushPendingFinish, goldBtn,
   }: {
     winnerName: string;
     continueAfterFirst: () => void;
@@ -1666,33 +1334,17 @@ export default function X01Play({
     return (
       <div
         style={{
-          position: "fixed",
-          left: "50%",
-          transform: "translateX(-50%)",
+          position: "fixed", left: "50%", transform: "translateX(-50%)",
           bottom: NAV_HEIGHT + Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 80,
-          zIndex: 47,
-          background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
-          color: "#1a1a1a",
-          fontWeight: 900,
-          textAlign: "center",
-          padding: 12,
-          borderRadius: 12,
-          boxShadow: "0 10px 28px rgba(0,0,0,.35)",
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
+          zIndex: 47, background: "linear-gradient(180deg, #ffc63a, #ffaf00)", color: "#1a1a1a",
+          fontWeight: 900, textAlign: "center", padding: 12, borderRadius: 12,
+          boxShadow: "0 10px 28px rgba(0,0,0,.35)", display: "flex", gap: 12, alignItems: "center",
         }}
       >
         <span>Victoire : {winnerName}</span>
-        <button onClick={continueAfterFirst} style={goldBtn}>
-          Continuer (laisser finir)
-        </button>
-        <button onClick={openOverlay} style={goldBtn}>
-          Classement
-        </button>
-        <button onClick={flushPendingFinish} style={goldBtn}>
-          Terminer
-        </button>
+        <button onClick={continueAfterFirst} style={goldBtn}>Continuer (laisser finir)</button>
+        <button onClick={openOverlay} style={goldBtn}>Classement</button>
+        <button onClick={flushPendingFinish} style={goldBtn}>Terminer</button>
       </div>
     );
   }
@@ -1708,7 +1360,6 @@ const miniCard: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,.10)",
   boxShadow: "0 10px 22px rgba(0,0,0,.35)",
 };
-const miniTitle: React.CSSProperties = { fontWeight: 900, fontSize: 11.5, color: "#ffcf57", marginBottom: 2 };
 const miniText: React.CSSProperties = { fontSize: 12, color: "#d9dbe3", lineHeight: 1.25 };
 const miniRankRow: React.CSSProperties = {
   display: "flex",

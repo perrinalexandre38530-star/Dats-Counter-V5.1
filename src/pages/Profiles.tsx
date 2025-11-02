@@ -4,13 +4,15 @@
 // - Bloc unique Connexion/Création (sans mot de passe)
 // - Amis: un seul panneau repliable "Amis (N)" trié par statut
 // - Profils locaux: compteur, mini-stats ruban doré, Éditer au-dessus de Suppr.
+// - [RESPONSIVE] Avatar centré au-dessus du nom sur mobile
 // - [RESPONSIVE] Mini-stats incassables : auto-fit/minmax + clamp()
+// - [NEW] Ring d’étoiles EXTERNE (outside) autour du médaillon
 // ============================================
 
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
+import ProfileStarRing from "../components/ProfileStarRing";
 import type { Store, Profile, Friend } from "../lib/types";
-// ❌ plus d'import MiniStats
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
 
 /* ================================
@@ -34,7 +36,9 @@ export default function Profiles({
     selfStatus = "online",
   } = store;
 
-  const [statsMap, setStatsMap] = React.useState<Record<string, BasicProfileStats | undefined>>({});
+  const [statsMap, setStatsMap] = React.useState<
+    Record<string, BasicProfileStats | undefined>
+  >({});
 
   function setActiveProfile(id: string | null) {
     update((s) => ({ ...s, activeProfileId: id }));
@@ -69,7 +73,6 @@ export default function Profiles({
 
   const active = profiles.find((p) => p.id === activeProfileId) || null;
 
-  // Cache stats du profil actif
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -84,64 +87,84 @@ export default function Profiles({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
+  const activeAvg3D = active?.id ? statsMap[active.id]?.avg3 ?? null : null;
+
   return (
-    <div className="container" style={{ maxWidth: 760 }}>
-      {/* ===== Profil connecté ===== */}
-      <Card title="Profil connecté">
-        {active ? (
-          <ActiveProfileBlock
-            selfStatus={selfStatus}
-            active={active}
-            onToggleAway={() =>
-              update((s) => ({ ...s, selfStatus: s.selfStatus === "away" ? ("online" as const) : ("away" as const) }))
-            }
-            onQuit={() => setActiveProfile(null)}
-            onEdit={(n, f) => {
-              if (n && n !== active.name) renameProfile(active.id, n);
-              if (f) changeAvatar(active.id, f);
+    <>
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+          .apb { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+          .apb__info { display:flex; flex-direction:column; align-items:flex-start; text-align:left; flex:1; min-width:220px; }
+          .apb__actions { justify-content:flex-start; }
+          @media (max-width: 600px){
+            .apb { flex-direction:column; align-items:center; }
+            .apb__info { align-items:center !important; text-align:center !important; }
+            .apb__actions { justify-content:center !important; }
+          }
+        `,
+        }}
+      />
+
+      <div className="container" style={{ maxWidth: 760 }}>
+        <Card title="Profil connecté">
+          {active ? (
+            <ActiveProfileBlock
+              selfStatus={selfStatus}
+              active={active}
+              activeAvg3D={activeAvg3D}
+              onToggleAway={() =>
+                update((s) => ({
+                  ...s,
+                  selfStatus: s.selfStatus === "away" ? ("online" as const) : ("away" as const),
+                }))
+              }
+              onQuit={() => setActiveProfile(null)}
+              onEdit={(n, f) => {
+                if (n && n !== active.name) renameProfile(active.id, n);
+                if (f) changeAvatar(active.id, f);
+              }}
+            />
+          ) : (
+            <UnifiedAuthBlock
+              profiles={profiles}
+              onConnect={(id) => setActiveProfile(id)}
+              onCreate={addProfile}
+              autoFocusCreate={autoCreate}
+            />
+          )}
+        </Card>
+
+        <Card title={`Amis (${friends?.length ?? 0})`}>
+          <FriendsMergedBlock friends={friends} />
+        </Card>
+
+        <Card title={`Profils locaux (${profiles.length})`}>
+          <AddLocalProfile onCreate={addProfile} />
+          <div
+            style={{
+              maxHeight: "min(44vh, 420px)",
+              minHeight: 260,
+              overflowY: "auto",
+              paddingRight: 6,
+              marginTop: 6,
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,.06)",
+              background: "linear-gradient(180deg, rgba(15,15,20,.55), rgba(12,12,16,.55))",
             }}
-          />
-        ) : (
-          <UnifiedAuthBlock
-            profiles={profiles}
-            onConnect={(id) => setActiveProfile(id)}
-            onCreate={addProfile}
-            autoFocusCreate={autoCreate}
-          />
-        )}
-      </Card>
-
-      {/* ===== Amis (fusion) ===== */}
-      <Card title={`Amis (${friends?.length ?? 0})`}>
-        <FriendsMergedBlock friends={friends} />
-      </Card>
-
-      {/* ===== Profils locaux ===== */}
-      <Card title={`Profils locaux (${profiles.length})`}>
-        <AddLocalProfile onCreate={addProfile} />
-        <div
-          style={{
-            maxHeight: "min(44vh, 420px)",
-            minHeight: 260,
-            overflowY: "auto",
-            paddingRight: 6,
-            marginTop: 6,
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,.06)",
-            background: "linear-gradient(180deg, rgba(15,15,20,.55), rgba(12,12,16,.55))",
-          }}
-        >
-          <LocalProfiles
-            profiles={profiles}
-            onRename={renameProfile}
-            onAvatar={changeAvatar}
-            onDelete={delProfile}
-            statsMap={statsMap}
-            warmup={(id) => warmProfileStats(id, setStatsMap)}
-          />
-        </div>
-      </Card>
-    </div>
+          >
+            <LocalProfiles
+              profiles={profiles}
+              onRename={renameProfile}
+              onAvatar={changeAvatar}
+              onDelete={delProfile}
+              statsMap={statsMap}
+              warmup={(id) => warmProfileStats(id, setStatsMap)}
+            />
+          </div>
+        </Card>
+      </div>
+    </>
   );
 }
 
@@ -160,48 +183,77 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-/* ------ Profil actif (ruban doré Mini-Stats) ------ */
+/* ------ Profil actif + ring externe ------ */
 function ActiveProfileBlock({
   active,
+  activeAvg3D,
   selfStatus,
   onToggleAway,
   onQuit,
   onEdit,
 }: {
   active: Profile;
+  activeAvg3D: number | null;
   selfStatus: "online" | "away" | "offline";
   onToggleAway: () => void;
   onQuit: () => void;
   onEdit: (name: string, avatar?: File | null) => void;
 }) {
+  const AVA = 96;        // diamètre avatar
+  const PAD = 10;        // épaisseur externe pour le ring (en px)
+  const STAR = 14;       // taille d’une étoile
+
   return (
-    <div className="row" style={{ gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-      {/* Avatar médaillon */}
+    <div className="apb">
+      {/* Wrapper médaillon (relative) */}
       <div
         style={{
-          width: 104,
-          height: 104,
+          width: AVA + 8,
+          height: AVA + 8,
           borderRadius: "50%",
           padding: 4,
           background: "linear-gradient(135deg, rgba(240,177,42,.9), rgba(120,80,10,.7))",
           boxShadow: "0 0 26px rgba(240,177,42,.35), inset 0 0 12px rgba(0,0,0,.55)",
-          display: "grid",
-          placeItems: "center",
+          position: "relative",
           flex: "0 0 auto",
         }}
       >
-        <ProfileAvatar size={96} dataUrl={active?.avatarDataUrl} label={active?.name?.[0]?.toUpperCase() || "?"} />
+        {/* RING EXTERNE : conteneur absolu élargi */}
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: -(PAD + STAR / 2),
+            top:  -(PAD + STAR / 2),
+            width:  AVA + 8 + (PAD + STAR / 2) * 2,
+            height: AVA + 8 + (PAD + STAR / 2) * 2,
+            pointerEvents: "none",
+          }}
+        >
+          <ProfileStarRing
+            anchorSize={104}
+           gapPx={0}
+           starSize={14}
+           stepDeg={10}
+           avg3d={activeAvg3D ?? 0}
+           />
+        </div>
+
+        {/* Avatar (étoiles internes désactivées) */}
+        <ProfileAvatar
+          size={AVA}
+          dataUrl={active?.avatarDataUrl}
+          label={active?.name?.[0]?.toUpperCase() || "?"}
+          showStars={false}
+        />
       </div>
 
       {/* Infos + actions */}
-      <div style={{ flex: 1, minWidth: 220, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+      <div className="apb__info">
         <div style={{ fontWeight: 800, fontSize: 20, whiteSpace: "nowrap" }}>
           <a
             href={`#/stats?pid=${active?.id}`}
-            onClick={(e) => {
-              e.preventDefault();
-              if (active?.id) location.hash = `#/stats?pid=${active.id}`;
-            }}
+            onClick={(e) => { e.preventDefault(); if (active?.id) location.hash = `#/stats?pid=${active.id}`; }}
             style={{ color: "#f0b12a", textDecoration: "none" }}
             title="Voir les statistiques"
           >
@@ -209,29 +261,21 @@ function ActiveProfileBlock({
           </a>
         </div>
 
-        {/* Statut */}
         <div className="row" style={{ gap: 8, alignItems: "center", marginTop: 4 }}>
           <StatusDot kind={selfStatus === "away" ? "away" : selfStatus === "offline" ? "offline" : "online"} />
-          <span
-            style={{
-              fontWeight: 700,
-              color: selfStatus === "away" ? "#f0b12a" : selfStatus === "offline" ? "#9aa0a6" : "#1fb46a",
-            }}
-          >
+          <span style={{ fontWeight: 700, color: selfStatus === "away" ? "#f0b12a" : selfStatus === "offline" ? "#9aa0a6" : "#1fb46a" }}>
             {selfStatus === "away" ? "Absent" : selfStatus === "offline" ? "Hors ligne" : "En ligne"}
           </span>
         </div>
 
-        {/* Ruban doré Mini-Stats (responsive) */}
         {active?.id && (
           <div style={{ marginTop: 8, width: "100%" }}>
             <GoldMiniStats profileId={active.id} />
           </div>
         )}
 
-        {/* Actions */}
-        <div className="row" style={{ gap: 8, marginTop: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          <EditInline initialName={active?.name || ""} onSave={onEdit} compact={true} />
+        <div className="row apb__actions" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <EditInline initialName={active?.name || ""} onSave={onEdit} compact />
           <button className="btn sm" onClick={onToggleAway} title="Basculer le statut">
             {selfStatus === "away" ? "EN LIGNE" : "ABSENT"}
           </button>
@@ -244,14 +288,14 @@ function ActiveProfileBlock({
   );
 }
 
-/* ------ Bloc unique Connexion + Création (avec preview avatar) ------ */
+/* ------ Bloc unique Connexion + Création ------ */
 function UnifiedAuthBlock({
   profiles,
   onConnect,
   onCreate,
   autoFocusCreate = false,
 }: {
-  profiles: Profile[];
+  profiles: { id: string; name: string }[];
   onConnect: (id: string) => void;
   onCreate: (name: string, file?: File | null) => void;
   autoFocusCreate?: boolean;
@@ -262,97 +306,45 @@ function UnifiedAuthBlock({
   const [preview, setPreview] = React.useState<string | null>(null);
   const createRef = React.useRef<HTMLInputElement>(null);
 
-  React.useEffect(() => {
-    if (autoFocusCreate) createRef.current?.focus();
-  }, [autoFocusCreate]);
-
+  React.useEffect(() => { if (autoFocusCreate) createRef.current?.focus(); }, [autoFocusCreate]);
   React.useEffect(() => {
     if (!file) { setPreview(null); return; }
-    const r = new FileReader();
-    r.onload = () => setPreview(String(r.result));
-    r.readAsDataURL(file);
+    const r = new FileReader(); r.onload = () => setPreview(String(r.result)); r.readAsDataURL(file);
   }, [file]);
 
   function submitCreate() {
     if (!name.trim()) return;
     onCreate(name.trim(), file);
-    setName("");
-    setFile(null);
-    setPreview(null);
+    setName(""); setFile(null); setPreview(null);
   }
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {/* Connexion existant (sans mot de passe) */}
       <div className="row" style={{ gap: 8 }}>
-        <select
-          className="input"
-          value={chosen}
-          onChange={(e) => setChosen(e.target.value)}
-          style={{ flex: 1 }}
-        >
+        <select className="input" value={chosen} onChange={(e) => setChosen(e.target.value)} style={{ flex: 1 }}>
           {profiles.length === 0 && <option value="">Aucun profil enregistré</option>}
-          {profiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
+          {profiles.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
         </select>
-        <button
-          className="btn primary sm"
-          onClick={() => chosen && onConnect(chosen)}
-        >
-          Connexion
-        </button>
+        <button className="btn primary sm" onClick={() => chosen && onConnect(chosen)}>Connexion</button>
       </div>
 
-      {/* Création rapide (preview avatar à gauche) */}
       <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <label
-          title="Choisir un avatar"
-          style={{
-            width: 44, height: 44, borderRadius: "50%", overflow: "hidden",
-            border: "1px solid var(--stroke)", display: "grid", placeItems: "center",
-            background: "#0f0f14", cursor: "pointer", flex: "0 0 auto"
-          }}
-        >
-          <input
-            type="file"
-            accept="image/*"
-            style={{ display: "none" }}
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-          {preview ? (
-            <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          ) : (
-            <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>
-          )}
+        <label title="Choisir un avatar" style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", border: "1px solid var(--stroke)", display: "grid", placeItems: "center", background: "#0f0f14", cursor: "pointer", flex: "0 0 auto" }}>
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          {preview ? <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>}
         </label>
 
-        <input
-          ref={createRef}
-          className="input"
-          placeholder="Nom du profil"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submitCreate()}
-          style={{ flex: 1, minWidth: 160 }}
-        />
-
-        <button className="btn primary sm" onClick={submitCreate}>
-          Ajouter
-        </button>
+        <input ref={createRef} className="input" placeholder="Nom du profil" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCreate()} style={{ flex: 1, minWidth: 160 }} />
+        <button className="btn primary sm" onClick={submitCreate}>Ajouter</button>
       </div>
     </div>
   );
 }
 
-/* ------ Amis fusionnés dans un seul panneau repliable ------ */
+/* ------ Amis fusionnés ------ */
 function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
   const list: Friend[] = Array.isArray(friends) ? friends : [];
   const [open, setOpen] = React.useState(true);
-
-  // Tri: online -> away -> offline, puis par nom
   const order = { online: 0, away: 1, offline: 2 } as const;
   const merged = [...list].sort((a, b) => {
     const sa = order[(a.status ?? "offline") as keyof typeof order] ?? 2;
@@ -363,21 +355,8 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
 
   return (
     <div className="card" style={{ background: "#111118" }}>
-      <button
-        className="row-between"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          width: "100%",
-          background: "transparent",
-          color: "inherit",
-          border: 0,
-          padding: "6px 2px",
-          cursor: "pointer",
-          fontWeight: 700,
-        }}
-      >
-        <span>Amis ({merged.length})</span>
-        <span className="subtitle" aria-hidden>▾</span>
+      <button className="row-between" onClick={() => setOpen((v) => !v)} style={{ width: "100%", background: "transparent", color: "inherit", border: 0, padding: "6px 2px", cursor: "pointer", fontWeight: 700 }}>
+        <span>Amis ({merged.length})</span><span className="subtitle" aria-hidden>▾</span>
       </button>
 
       {open && (
@@ -385,24 +364,52 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
           {merged.length === 0 ? (
             <div className="subtitle">Aucun ami pour l’instant</div>
           ) : (
-            merged.map((f) => (
-              <div className="item" key={f.id} style={{ background: "#0f0f14" }}>
-                <div className="row" style={{ gap: 10, minWidth: 0 }}>
-                  <ProfileAvatar size={44} dataUrl={f.avatarDataUrl} label={f.name?.[0]?.toUpperCase() || "?"} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
-                    {f.stats && (
-                      <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                        Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win: {Math.round((f.stats?.winrate ?? 0) * 100)}%
+            merged.map((f) => {
+              const AVA = 44, PAD = 8, STAR = 9;
+              return (
+                <div className="item" key={f.id} style={{ background: "#0f0f14" }}>
+                  <div className="row" style={{ gap: 10, minWidth: 0 }}>
+                    <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
+                      {/* ring externe */}
+                      <div
+                        aria-hidden
+                        style={{
+                          position: "absolute",
+                          left: -(PAD + STAR / 2),
+                          top:  -(PAD + STAR / 2),
+                          width:  AVA + (PAD + STAR / 2) * 2,
+                          height: AVA + (PAD + STAR / 2) * 2,
+                          pointerEvents: "none",
+                        }}
+                      >
+                        <ProfileStarRing
+                         anchorSize={44}     // = taille de l’avatar dans la liste
+                         gapPx={5}
+                         starSize={8}
+                         stepDeg={10}
+                        rotationDeg={0}
+                        avg3d={f.stats?.avg3 ?? 0}
+                      />
                       </div>
-                    )}
+
+                      <ProfileAvatar size={AVA} dataUrl={f.avatarDataUrl} label={f.name?.[0]?.toUpperCase() || "?"} showStars={false} />
+                    </div>
+
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
+                      {f.stats && (
+                        <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
+                          Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win: {Math.round((f.stats?.winrate ?? 0) * 100)}%
+                        </div>
+                      )}
+                    </div>
                   </div>
+                  <span className="subtitle" style={{ whiteSpace: "nowrap" }}>
+                    {f.status === "online" ? "En ligne" : f.status === "away" ? "Absent" : "Hors-ligne"}
+                  </span>
                 </div>
-                <span className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                  {f.status === "online" ? "En ligne" : f.status === "away" ? "Absent" : "Hors-ligne"}
-                </span>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
@@ -418,59 +425,35 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
 
   React.useEffect(() => {
     if (!file) { setPreview(null); return; }
-    const r = new FileReader();
-    r.onload = () => setPreview(String(r.result));
-    r.readAsDataURL(file);
+    const r = new FileReader(); r.onload = () => setPreview(String(r.result)); r.readAsDataURL(file);
   }, [file]);
 
   function submit() {
     if (!name.trim()) return;
     onCreate(name.trim(), file);
-    setName("");
-    setFile(null);
-    setPreview(null);
+    setName(""); setFile(null); setPreview(null);
   }
 
   return (
     <div className="item" style={{ gap: 10, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
-      <label
-        title="Choisir un avatar"
-        style={{
-          width: 44, height: 44, borderRadius: "50%", overflow: "hidden",
-          border: "1px solid (var(--stroke))", display: "grid", placeItems: "center",
-          background: "#0f0f14", cursor: "pointer", flex: "0 0 auto"
-        }}
-      >
+      <label title="Choisir un avatar" style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", border: "1px solid (var(--stroke))", display: "grid", placeItems: "center", background: "#0f0f14", cursor: "pointer", flex: "0 0 auto" }}>
         <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        {preview ? (
-          <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>
-        )}
+        {preview ? <img src={preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span className="subtitle" style={{ fontSize: 11 }}>Avatar</span>}
       </label>
 
-      <input
-        className="input"
-        placeholder="Nom du profil"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && submit()}
-        style={{ flex: 1, minWidth: 160, maxWidth: 260 }}
-      />
+      <input className="input" placeholder="Nom du profil" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ flex: 1, minWidth: 160, maxWidth: 260 }} />
 
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
         <button className="btn primary sm" onClick={submit}>Ajouter</button>
         {(name || file) && (
-          <button className="btn sm" onClick={() => { setName(""); setFile(null); setPreview(null); }}>
-            Annuler
-          </button>
+          <button className="btn sm" onClick={() => { setName(""); setFile(null); setPreview(null); }}>Annuler</button>
         )}
       </div>
     </div>
   );
 }
 
-/* ----- Liste des profils locaux ----- */
+/* ----- Liste des profils locaux (ring externe aussi) ----- */
 function LocalProfiles({
   profiles,
   onRename,
@@ -508,12 +491,33 @@ function LocalProfiles({
       {profiles.map((p) => {
         const isEdit = editing === p.id;
         const s = statsMap[p.id];
+        const AVA = 48, PAD = 8, STAR = 9;
         return (
           <div className="item" key={p.id} style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            {/* gauche */}
             <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
-              <div style={{ flex: "0 0 auto" }}>
-                <ProfileAvatar size={48} dataUrl={p.avatarDataUrl} label={p.name?.[0]?.toUpperCase() || "?"} />
+              <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
+                <div
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    left: -(PAD + STAR / 2),
+                    top:  -(PAD + STAR / 2),
+                    width:  AVA + (PAD + STAR / 2) * 2,
+                    height: AVA + (PAD + STAR / 2) * 2,
+                    pointerEvents: "none",
+                  }}
+                >
+                  <ProfileStarRing
+                   anchorSize={48}     // = taille de l’avatar local
+                   gapPx={5}
+                   starSize={9}
+                   stepDeg={10}
+                   rotationDeg={0}
+                    avg3d={s?.avg3 ?? 0}
+                  />
+                </div>
+
+                <ProfileAvatar size={AVA} dataUrl={p.avatarDataUrl} label={p.name?.[0]?.toUpperCase() || "?"} showStars={false} />
               </div>
 
               <div style={{ minWidth: 0 }}>
@@ -538,8 +542,6 @@ function LocalProfiles({
                         {p.name || "—"}
                       </a>
                     </div>
-
-                    {/* ruban doré — responsive sans chevauchements */}
                     <div style={{ marginTop: 6 }}>
                       <GoldMiniStats profileId={p.id} />
                     </div>
@@ -548,7 +550,6 @@ function LocalProfiles({
               </div>
             </div>
 
-            {/* droite: actions en colonne (Éditer au-dessus de Suppr.) */}
             <div className="col" style={{ gap: 6, display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 96 }}>
               {isEdit ? (
                 <>
@@ -569,7 +570,7 @@ function LocalProfiles({
   );
 }
 
-/* ----- Edition inline du profil actif ----- */
+/* ----- Edition inline ----- */
 function EditInline({
   initialName,
   onSave,
@@ -587,39 +588,15 @@ function EditInline({
   const [avatarUrl, setAvatarUrl] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => setAvatarUrl(String(reader.result));
-      reader.readAsDataURL(file);
-    } else {
-      setAvatarUrl(null);
-    }
+    if (file) { const reader = new FileReader(); reader.onload = () => setAvatarUrl(String(reader.result)); reader.readAsDataURL(file); }
+    else setAvatarUrl(null);
   }, [file]);
 
-  if (!edit) {
-    return (
-      <button className="btn sm" onClick={() => setEdit(true)} title="Éditer le profil">
-        ÉDITER
-      </button>
-    );
-  }
+  if (!edit) return (<button className="btn sm" onClick={() => setEdit(true)} title="Éditer le profil">ÉDITER</button>);
 
   return (
     <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
-      <label
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: "50%",
-          overflow: "hidden",
-          border: "2px solid rgba(240,177,42,.4)",
-          cursor: "pointer",
-          display: "grid",
-          placeItems: "center",
-          background: "#111118",
-          position: "relative",
-        }}
-      >
+      <label style={{ width: 56, height: 56, borderRadius: "50%", overflow: "hidden", border: "2px solid rgba(240,177,42,.4)", cursor: "pointer", display: "grid", placeItems: "center", background: "#111118", position: "relative" }}>
         <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         <img src={avatarUrl ?? ""} alt="avatar" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: avatarUrl ? 1 : 0.2 }} />
         {!avatarUrl && <span style={{ position: "absolute", color: "#999", fontSize: 12, bottom: 6 }}>Cliquer</span>}
@@ -627,37 +604,14 @@ function EditInline({
 
       <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ width: compact ? 160 : 200 }} />
 
-      <button
-        className="btn ok sm"
-        onClick={() => {
-          onSave(name, file);
-          setEdit(false);
-          setFile(null);
-          setAvatarUrl(null);
-        }}
-      >
-        Enregistrer
-      </button>
-      <button
-        className="btn sm"
-        onClick={() => {
-          setEdit(false);
-          setFile(null);
-          setAvatarUrl(null);
-        }}
-      >
-        Annuler
-      </button>
-      {onDisconnect && (
-        <button className="btn danger sm" onClick={onDisconnect}>
-          QUITTER
-        </button>
-      )}
+      <button className="btn ok sm" onClick={() => { onSave(name, file); setEdit(false); setFile(null); setAvatarUrl(null); }}>Enregistrer</button>
+      <button className="btn sm" onClick={() => { setEdit(false); setFile(null); setAvatarUrl(null); }}>Annuler</button>
+      {onDisconnect && <button className="btn danger sm" onClick={onDisconnect}>QUITTER</button>}
     </div>
   );
 }
 
-/* ------ Ruban doré Mini-Stats (1 ligne, mobile-safe) ------ */
+/* ------ Gold mini-stats ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
   const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
 
@@ -667,9 +621,7 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
       try {
         const s = await getBasicProfileStats(profileId);
         if (!cancelled) setStats(s);
-      } catch {
-        if (!cancelled) setStats(null);
-      }
+      } catch { if (!cancelled) setStats(null); }
     })();
     return () => { cancelled = true; };
   }, [profileId]);
@@ -686,33 +638,11 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
       ? Math.round(((stats as any).legsWon / (stats as any).legsPlayed) * 100)
       : null;
 
-  // ⬇️ plus petit pour téléphones étroits (≥320px)
-  // 4 * 58 + 3 * 4 + paddings ≈ 254px → tient partout
   const pillW = "clamp(58px, 17vw, 78px)";
 
   return (
-    <div
-      style={{
-        borderRadius: 10,
-        padding: "5px 6px",
-        boxSizing: "border-box",
-        background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))",
-        border: "1px solid rgba(240,177,42,.25)",
-        boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)",
-        width: "100%",
-        maxWidth: "100%",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "nowrap",   // jamais de retour
-          alignItems: "stretch",
-          gap: 0,               // l’espace est géré par GoldSep
-          width: "100%",
-        }}
-      >
+    <div style={{ borderRadius: 10, padding: "5px 6px", boxSizing: "border-box", background: "linear-gradient(180deg, rgba(60,42,15,.9), rgba(38,28,12,.9))", border: "1px solid rgba(240,177,42,.25)", boxShadow: "0 6px 16px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35)", width: "100%", maxWidth: "100%", overflow: "hidden" }}>
+      <div style={{ display: "flex", flexWrap: "nowrap", alignItems: "stretch", gap: 0, width: "100%" }}>
         <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="Best" value={String(best)} width={pillW} />
@@ -725,7 +655,6 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
   );
 }
 
-/* fin séparateur très fin (mobile) */
 function GoldSep() {
   return (
     <div aria-hidden style={{ width: 4, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -734,51 +663,11 @@ function GoldSep() {
   );
 }
 
-/* pastille compacte, chiffres plus petits */
-function GoldStatItem({
-  label,
-  value,
-  width,
-}: {
-  label: string;
-  value: string;
-  width: string;
-}) {
+function GoldStatItem({ label, value, width }: { label: string; value: string; width: string; }) {
   return (
-    <div
-      style={{
-        width,
-        minWidth: 0,
-        display: "grid",
-        gap: 1,
-        textAlign: "center",
-        paddingInline: 2,
-        fontVariantNumeric: "tabular-nums",
-      }}
-    >
-      <span
-        style={{
-          fontSize: "clamp(8px, 1.6vw, 9.5px)",   // label plus petit
-          color: "rgba(255,255,255,.66)",
-          lineHeight: 1.05,
-          whiteSpace: "nowrap",
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          fontWeight: 800,
-          letterSpacing: 0.1,
-          color: "#f0b12a",
-          textShadow: "0 0 4px rgba(240,177,42,.16)",
-          fontSize: "clamp(9.5px, 2.4vw, 12px)",  // 🔻 valeurs dorées réduites (mobile OK)
-          lineHeight: 1.05,
-          whiteSpace: "nowrap",
-        }}
-      >
-        {value}
-      </span>
+    <div style={{ width, minWidth: 0, display: "grid", gap: 1, textAlign: "center", paddingInline: 2, fontVariantNumeric: "tabular-nums" }}>
+      <span style={{ fontSize: "clamp(8px, 1.6vw, 9.5px)", color: "rgba(255,255,255,.66)", lineHeight: 1.05, whiteSpace: "nowrap" }}>{label}</span>
+      <span style={{ fontWeight: 800, letterSpacing: 0.1, color: "#f0b12a", textShadow: "0 0 4px rgba(240,177,42,.16)", fontSize: "clamp(9.5px, 2.4vw, 12px)", lineHeight: 1.05, whiteSpace: "nowrap" }}>{value}</span>
     </div>
   );
 }
@@ -791,15 +680,9 @@ function StatusDot({ kind }: { kind: "online" | "away" | "offline" }) {
 /* ================================
    Utils
 ================================ */
-function fmt(n: number) {
-  return (Math.round((n ?? 0) * 10) / 10).toFixed(1);
-}
+function fmt(n: number) { return (Math.round((n ?? 0) * 10) / 10).toFixed(1); }
 function read(f: File) {
-  return new Promise<string>((res) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result));
-    r.readAsDataURL(f);
-  });
+  return new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsDataURL(f); });
 }
 async function warmProfileStats(
   id: string,
