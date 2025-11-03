@@ -6,7 +6,8 @@
 // - Profils locaux: compteur, mini-stats ruban doré, Éditer au-dessus de Suppr.
 // - [RESPONSIVE] Avatar centré au-dessus du nom sur mobile
 // - [RESPONSIVE] Mini-stats incassables : auto-fit/minmax + clamp()
-// - [NEW] Ring d’étoiles EXTERNE (outside) autour du médaillon
+// - Ring d’étoiles EXTERNE autour du médaillon (piloté par Moy/3)
+// - [FIX] CO + Win% visibles partout (actif, liste, amis)
 // ============================================
 
 import React from "react";
@@ -14,6 +15,44 @@ import ProfileAvatar from "../components/ProfileAvatar";
 import ProfileStarRing from "../components/ProfileStarRing";
 import type { Store, Profile, Friend } from "../lib/types";
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
+
+/* ========== Normalisation des stats (quelle que soit la source) ========== */
+type NormalizedStats = {
+  avg3: number;          // moyenne /3 darts
+  bestVisit: number;     // meilleure volée
+  bestCheckout: number;  // meilleur checkout
+  winPct: number;        // pourcentage de victoires (0..100)
+  games: number;
+  legs: number;
+};
+function normalizeStats(s?: any): NormalizedStats {
+  const avg3 =
+    Number.isFinite(s?.avg3d) ? Number(s.avg3d) :
+    Number.isFinite(s?.avg3)  ? Number(s.avg3)  : 0;
+
+  const bestVisit = Number(s?.bestVisit ?? 0);
+  const bestCheckout = Number(s?.bestCheckout ?? s?.co ?? 0);
+
+  // priorité à winRate (statsBridge), sinon wins/legs ou wins/games
+  let winPct = 0;
+  if (Number.isFinite(s?.winRate)) winPct = Number(s.winRate);
+  else {
+    const wins  = Number(s?.wins ?? 0);
+    const legs  = Number(s?.legs ?? 0);
+    const games = Number(s?.games ?? 0);
+    if (legs > 0)      winPct = (wins / legs) * 100;
+    else if (games > 0) winPct = (wins / games) * 100;
+  }
+
+  return {
+    avg3,
+    bestVisit,
+    bestCheckout,
+    winPct: Math.max(0, Math.min(100, Math.round(winPct))),
+    games: Number(s?.games ?? 0),
+    legs: Number(s?.legs ?? 0),
+  };
+}
 
 /* ================================
    Page — Profils
@@ -84,9 +123,7 @@ export default function Profiles({
         if (!cancelled) setStatsMap((m) => ({ ...m, [pid]: s }));
       } catch {}
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
@@ -104,14 +141,11 @@ export default function Profiles({
         } catch {}
       }
     })();
-    return () => {
-      stopped = true;
-    };
-  }, [profiles]);
+    return () => { stopped = true; };
+  }, [profiles]); // volontairement sans statsMap pour les perfs
 
-  // ✅ Moyenne 3-darts du profil actif (pour l’anneau)
-  const activeAvg3D =
-    active?.id ? (statsMap[active.id]?.avg3d ?? (statsMap[active.id] as any)?.avg3 ?? null) : null;
+  // Anneau = Moy/3 normalisée
+  const activeAvg3D = active?.id ? normalizeStats(statsMap[active.id]).avg3 : null;
 
   return (
     <>
@@ -230,7 +264,7 @@ function ActiveProfileBlock({
 
   return (
     <div className="apb">
-      {/* Médaillon (relative) */}
+      {/* Médaillon */}
       <div
         style={{
           width: MEDALLION,
@@ -493,17 +527,8 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
               const MEDALLION = AVA;
               const STAR = 8;
 
-              // Win% robuste (winRate direct si dispo, sinon fallback)
-              const friendWinPct = (() => {
-                const wr = (f as any)?.stats?.winRate;
-                if (Number.isFinite(wr)) return Math.round(Number(wr));
-                const wins = Number((f as any)?.stats?.wins ?? 0);
-                const legs = Number((f as any)?.stats?.legs ?? 0);
-                const games = Number((f as any)?.stats?.games ?? 0);
-                if (legs > 0)  return Math.round((wins / legs) * 100);
-                if (games > 0) return Math.round((wins / games) * 100);
-                return 0;
-              })();
+              // si des stats sont présentes côté Friend, on les normalise aussi
+              const ns = normalizeStats(f.stats);
 
               return (
                 <div className="item" key={f.id} style={{ background: "#0f0f14" }}>
@@ -525,7 +550,7 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
                           gapPx={2}
                           starSize={STAR}
                           stepDeg={10}
-                          avg3d={(f as any)?.stats?.avg3 ?? 0}
+                          avg3d={ns.avg3}
                         />
                       </div>
 
@@ -541,7 +566,7 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
                       <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
                       {f.stats && (
                         <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                          Moy/3: {fmt((f as any)?.stats?.avg3 ?? 0)} · Best: {(f as any)?.stats?.bestVisit ?? 0} · Win: {friendWinPct}%
+                          Moy/3: {fmt(ns.avg3)} · Best: {ns.bestVisit} · Win: {ns.winPct}%
                         </div>
                       )}
                     </div>
@@ -596,7 +621,7 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
           height: 44,
           borderRadius: "50%",
           overflow: "hidden",
-          border: "1px solid var(--stroke)",
+          border: "1px solid (var(--stroke))",
           display: "grid",
           placeItems: "center",
           background: "#0f0f14",
@@ -649,7 +674,7 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
   );
 }
 
-/* ----- Liste des profils locaux (ring externe aussi) ----- */
+/* ----- Liste des profils locaux ----- */
 function LocalProfiles({
   profiles,
   onRename,
@@ -687,6 +712,8 @@ function LocalProfiles({
       {profiles.map((p) => {
         const isEdit = editing === p.id;
         const s = statsMap[p.id];
+        const ns = normalizeStats(s);
+
         const AVA = 48;
         const MEDALLION = AVA;
         const STAR = 9;
@@ -713,7 +740,7 @@ function LocalProfiles({
                     gapPx={2}
                     starSize={STAR}
                     stepDeg={10}
-                    avg3d={s?.avg3d ?? (s as any)?.avg3 ?? 0}
+                    avg3d={ns.avg3}
                   />
                 </div>
 
@@ -907,7 +934,7 @@ function EditInline({
   );
 }
 
-/* ------ Gold mini-stats (FIX CO + Win%) ------ */
+/* ------ Gold mini-stats (affichage unifié) ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
   const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
 
@@ -924,27 +951,7 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
     return () => { cancelled = true; };
   }, [profileId]);
 
-  // champs robustes quelle que soit la source
-  const avg3 =
-    Number.isFinite((stats as any)?.avg3d) ? (stats as any).avg3d :
-    Number.isFinite((stats as any)?.avg3)  ? (stats as any).avg3  : 0;
-
-  const best = Number((stats as any)?.bestVisit ?? 0);
-
-  // ✅ CO = meilleur checkout si dispo, sinon 0
-  const co = Number((stats as any)?.bestCheckout ?? 0);
-
-  // ✅ Win% : on prend d'abord winRate (statsBridge), sinon wins/legs|games
-  const winPct = (() => {
-    const wr = (stats as any)?.winRate ?? (stats as any)?.winPct;
-    if (Number.isFinite(wr)) return Math.round(Number(wr));
-    const wins = Number((stats as any)?.wins ?? 0);
-    const legs = Number((stats as any)?.legs ?? 0);
-    const games = Number((stats as any)?.games ?? 0);
-    if (legs > 0)  return Math.round((wins / legs) * 100);
-    if (games > 0) return Math.round((wins / games) * 100);
-    return 0;
-  })();
+  const ns = normalizeStats(stats);
 
   const pillW = "clamp(58px, 17vw, 78px)";
 
@@ -963,13 +970,13 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
       }}
     >
       <div style={{ display: "flex", flexWrap: "nowrap", alignItems: "stretch", gap: 0, width: "100%" }}>
-        <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} width={pillW} />
+        <GoldStatItem label="Moy/3" value={fmt(ns.avg3)} width={pillW} />
         <GoldSep />
-        <GoldStatItem label="Best" value={String(best)} width={pillW} />
+        <GoldStatItem label="Best" value={String(ns.bestVisit)} width={pillW} />
         <GoldSep />
-        <GoldStatItem label="CO" value={String(co)} width={pillW} />
+        <GoldStatItem label="CO" value={String(ns.bestCheckout)} width={pillW} />
         <GoldSep />
-        <GoldStatItem label="Win%" value={`${winPct}`} width={pillW} />
+        <GoldStatItem label="Win%" value={`${ns.winPct}`} width={pillW} />
       </div>
     </div>
   );

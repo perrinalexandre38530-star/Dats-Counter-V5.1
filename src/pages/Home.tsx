@@ -222,20 +222,44 @@ function ActiveProfileCard({
   onNameClick: () => void;
   basicStats?: BasicProfileStats;
 }) {
+  // Legacy éventuel présent dans certains profils
   const legacy = (profile as any).stats || {};
-  const s = {
-    avg3: isNum(basicStats?.avg3) ? basicStats!.avg3 : (isNum(legacy.avg3) ? legacy.avg3 : 0),
-    bestVisit: isNum(basicStats?.bestVisit) ? basicStats!.bestVisit : (isNum(legacy.bestVisit) ? legacy.bestVisit : 0),
-    highestCheckout: isNum(basicStats?.highestCheckout) ? basicStats!.highestCheckout : (isNum(legacy.bestCheckout) ? legacy.bestCheckout : 0),
-    legsPlayed: isNum(basicStats?.legsPlayed) ? basicStats!.legsPlayed : (isNum(legacy.legsPlayed) ? legacy.legsPlayed : 0),
-    legsWon: isNum(basicStats?.legsWon) ? basicStats!.legsWon : (isNum(legacy.legsWon) ? legacy.legsWon : 0),
-  };
 
-  const avg3n = isNum(s.avg3) ? s.avg3 : 0;
-  const avg3 = (Math.round(avg3n * 10) / 10).toFixed(1);
-  const best = String(s.bestVisit || 0);
-  const co = String(s.highestCheckout || 0);
-  const wr = s.legsPlayed > 0 ? Math.round((s.legsWon / s.legsPlayed) * 100) : null;
+  // Normalisation robuste des champs
+  const avg3Val =
+    isNum((basicStats as any)?.avg3d) ? (basicStats as any).avg3d :
+    isNum((basicStats as any)?.avg3)  ? (basicStats as any).avg3  :
+    isNum(legacy.avg3) ? legacy.avg3 : 0;
+
+  const bestVisitVal = isNum((basicStats as any)?.bestVisit)
+    ? (basicStats as any).bestVisit
+    : (isNum(legacy.bestVisit) ? legacy.bestVisit : 0);
+
+  // ✅ CO = bestCheckout (statsBridge) ou legacy.bestCheckout
+  const bestCheckoutVal = isNum((basicStats as any)?.bestCheckout)
+    ? (basicStats as any).bestCheckout
+    : (isNum(legacy.bestCheckout) ? legacy.bestCheckout : 0);
+
+  // ✅ Win% priorité à winRate (statsBridge), sinon fallback sur wins/games ou wins/legs
+  const wins = Number((basicStats as any)?.wins ?? legacy.wins ?? 0);
+  const games = Number((basicStats as any)?.games ?? legacy.games ?? 0);
+  const legs = Number((basicStats as any)?.legs ?? legacy.legs ?? 0);
+  const winRateField = (basicStats as any)?.winRate;
+
+  let winPct: number;
+  if (isNum(winRateField)) {
+    winPct = Math.round(winRateField);
+  } else if (games > 0) {
+    winPct = Math.round((wins / games) * 100);
+  } else if (legs > 0) {
+    winPct = Math.round((wins / legs) * 100);
+  } else {
+    winPct = 0;
+  }
+
+  const avg3 = (Math.round(avg3Val * 10) / 10).toFixed(1);
+  const best = String(bestVisitVal || 0);
+  const co = String(bestCheckoutVal || 0);
 
   const statusLabel =
     status === "away" ? "Absent" : status === "offline" ? "Hors ligne" : "En ligne";
@@ -296,7 +320,7 @@ function ActiveProfileCard({
             starSize={STAR}
             stepDeg={10}
             rotationDeg={0}
-            avg3d={avg3n}
+            avg3d={avg3Val}
           />
         </div>
 
@@ -398,7 +422,7 @@ function ActiveProfileCard({
         <StatMini label="Moy/3" value={avg3} />
         <StatMini label="Best" value={best} />
         <StatMini label="CO" value={co} />
-        <StatMini label="Win%" value={wr !== null ? `${wr}%` : "—"} />
+        <StatMini label="Win%" value={`${winPct}%`} />
       </div>
     </div>
   );
