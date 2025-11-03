@@ -90,30 +90,28 @@ export default function Profiles({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
-  // ✅ Pré-chauffage pour TOUS les profils locaux visibles
+  // Pré-chauffage pour TOUS les profils locaux visibles
   React.useEffect(() => {
     let stopped = false;
     (async () => {
-      // Limite de sécurité si très grosse liste
       const ids = profiles.map((p) => p.id).slice(0, 48);
       for (const id of ids) {
         if (stopped) break;
         if (statsMap[id]) continue;
         try {
           const s = await getBasicProfileStats(id);
-          if (!stopped) {
-            setStatsMap((m) => (m[id] ? m : { ...m, [id]: s }));
-          }
+          if (!stopped) setStatsMap((m) => (m[id] ? m : { ...m, [id]: s }));
         } catch {}
       }
     })();
     return () => {
       stopped = true;
     };
-  }, [profiles, /* statsMap intentionally omitted for perf */]);
+  }, [profiles]);
 
-  // ✅ Moyenne 3-darts du profil actif (on passe la valeur brute au ring)
-  const activeAvg3D = active?.id ? statsMap[active.id]?.avg3 ?? null : null;
+  // ✅ Moyenne 3-darts du profil actif (pour l’anneau)
+  const activeAvg3D =
+    active?.id ? (statsMap[active.id]?.avg3d ?? (statsMap[active.id] as any)?.avg3 ?? null) : null;
 
   return (
     <>
@@ -225,9 +223,9 @@ function ActiveProfileBlock({
   onQuit: () => void;
   onEdit: (name: string, avatar?: File | null) => void;
 }) {
-  const AVATAR = 96; // diamètre image
-  const BORDER = 8;  // bord + padding visuel du médaillon (cf. wrapper width/height = AVATAR + BORDER)
-  const MEDALLION = AVATAR + BORDER; // ✅ diamètre réel utilisé par l'anneau
+  const AVATAR = 96;
+  const BORDER = 8;
+  const MEDALLION = AVATAR + BORDER;
   const STAR = 14;
 
   return (
@@ -245,7 +243,7 @@ function ActiveProfileBlock({
           flex: "0 0 auto",
         }}
       >
-        {/* Anneau d’étoiles — ancré sur le diamètre visuel MEDALLION */}
+        {/* Anneau d’étoiles */}
         <div
           aria-hidden
           style={{
@@ -258,15 +256,15 @@ function ActiveProfileBlock({
           }}
         >
           <ProfileStarRing
-            anchorSize={MEDALLION} // ✅ ancrage exact
-            gapPx={-2}             // proche du bord
+            anchorSize={MEDALLION}
+            gapPx={-2}
             starSize={STAR}
             stepDeg={10}
-            avg3d={activeAvg3D ?? 0} // ✅ valeur brute (demi-étoiles gérées dans le composant)
+            avg3d={activeAvg3D ?? 0}
           />
         </div>
 
-        {/* Avatar (étoiles internes désactivées) */}
+        {/* Avatar */}
         <ProfileAvatar
           size={AVATAR}
           dataUrl={active?.avatarDataUrl}
@@ -492,8 +490,21 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
           ) : (
             merged.map((f) => {
               const AVA = 44;
-              const MEDALLION = AVA; // ici pas de bord visuel ajouté
+              const MEDALLION = AVA;
               const STAR = 8;
+
+              // Win% robuste (winRate direct si dispo, sinon fallback)
+              const friendWinPct = (() => {
+                const wr = (f as any)?.stats?.winRate;
+                if (Number.isFinite(wr)) return Math.round(Number(wr));
+                const wins = Number((f as any)?.stats?.wins ?? 0);
+                const legs = Number((f as any)?.stats?.legs ?? 0);
+                const games = Number((f as any)?.stats?.games ?? 0);
+                if (legs > 0)  return Math.round((wins / legs) * 100);
+                if (games > 0) return Math.round((wins / games) * 100);
+                return 0;
+              })();
+
               return (
                 <div className="item" key={f.id} style={{ background: "#0f0f14" }}>
                   <div className="row" style={{ gap: 10, minWidth: 0 }}>
@@ -514,7 +525,7 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
                           gapPx={2}
                           starSize={STAR}
                           stepDeg={10}
-                          avg3d={f.stats?.avg3 ?? 0} // si Friend ne possède pas de stats, l’anneau ne s’affiche pas (0)
+                          avg3d={(f as any)?.stats?.avg3 ?? 0}
                         />
                       </div>
 
@@ -530,8 +541,7 @@ function FriendsMergedBlock({ friends }: { friends?: Friend[] }) {
                       <div style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{f.name || "—"}</div>
                       {f.stats && (
                         <div className="subtitle" style={{ whiteSpace: "nowrap" }}>
-                          Moy/3: {fmt(f.stats?.avg3 ?? 0)} · Best: {f.stats?.bestVisit ?? 0} · Win:{" "}
-                          {Math.round((f.stats?.winrate ?? 0) * 100)}%
+                          Moy/3: {fmt((f as any)?.stats?.avg3 ?? 0)} · Best: {(f as any)?.stats?.bestVisit ?? 0} · Win: {friendWinPct}%
                         </div>
                       )}
                     </div>
@@ -586,7 +596,7 @@ function AddLocalProfile({ onCreate }: { onCreate: (name: string, file?: File | 
           height: 44,
           borderRadius: "50%",
           overflow: "hidden",
-          border: "1px solid (var(--stroke))",
+          border: "1px solid var(--stroke)",
           display: "grid",
           placeItems: "center",
           background: "#0f0f14",
@@ -678,7 +688,7 @@ function LocalProfiles({
         const isEdit = editing === p.id;
         const s = statsMap[p.id];
         const AVA = 48;
-        const MEDALLION = AVA; // pas d’épaisseur supplémentaire ici
+        const MEDALLION = AVA;
         const STAR = 9;
 
         return (
@@ -703,7 +713,7 @@ function LocalProfiles({
                     gapPx={2}
                     starSize={STAR}
                     stepDeg={10}
-                    avg3d={s?.avg3 ?? 0} // ✅ brute, pour afficher demi-étoiles
+                    avg3d={s?.avg3d ?? (s as any)?.avg3 ?? 0}
                   />
                 </div>
 
@@ -897,7 +907,7 @@ function EditInline({
   );
 }
 
-/* ------ Gold mini-stats ------ */
+/* ------ Gold mini-stats (FIX CO + Win%) ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
   const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
 
@@ -911,22 +921,30 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
         if (!cancelled) setStats(null);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [profileId]);
 
-  const avg3 = stats?.avg3 ?? 0;
-  const best = stats?.bestVisit ?? 0;
-  const co =
-    (stats as any)?.co ??
-    (stats as any)?.coCount ??
-    (stats as any)?.checkouts ??
-    0;
-  const winPct =
-    stats && (stats as any).legsPlayed > 0
-      ? Math.round(((stats as any).legsWon / (stats as any).legsPlayed) * 100)
-      : null;
+  // champs robustes quelle que soit la source
+  const avg3 =
+    Number.isFinite((stats as any)?.avg3d) ? (stats as any).avg3d :
+    Number.isFinite((stats as any)?.avg3)  ? (stats as any).avg3  : 0;
+
+  const best = Number((stats as any)?.bestVisit ?? 0);
+
+  // ✅ CO = meilleur checkout si dispo, sinon 0
+  const co = Number((stats as any)?.bestCheckout ?? 0);
+
+  // ✅ Win% : on prend d'abord winRate (statsBridge), sinon wins/legs|games
+  const winPct = (() => {
+    const wr = (stats as any)?.winRate ?? (stats as any)?.winPct;
+    if (Number.isFinite(wr)) return Math.round(Number(wr));
+    const wins = Number((stats as any)?.wins ?? 0);
+    const legs = Number((stats as any)?.legs ?? 0);
+    const games = Number((stats as any)?.games ?? 0);
+    if (legs > 0)  return Math.round((wins / legs) * 100);
+    if (games > 0) return Math.round((wins / games) * 100);
+    return 0;
+  })();
 
   const pillW = "clamp(58px, 17vw, 78px)";
 
@@ -944,22 +962,14 @@ function GoldMiniStats({ profileId }: { profileId: string }) {
         overflow: "hidden",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "nowrap",
-          alignItems: "stretch",
-          gap: 0,
-          width: "100%",
-        }}
-      >
+      <div style={{ display: "flex", flexWrap: "nowrap", alignItems: "stretch", gap: 0, width: "100%" }}>
         <GoldStatItem label="Moy/3" value={(Math.round(avg3 * 10) / 10).toFixed(1)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="Best" value={String(best)} width={pillW} />
         <GoldSep />
         <GoldStatItem label="CO" value={String(co)} width={pillW} />
         <GoldSep />
-        <GoldStatItem label="Win%" value={winPct === null ? "—" : `${winPct}`} width={pillW} />
+        <GoldStatItem label="Win%" value={`${winPct}`} width={pillW} />
       </div>
     </div>
   );
