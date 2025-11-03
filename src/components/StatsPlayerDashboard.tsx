@@ -365,6 +365,52 @@ function BarChart({
 
 /* ---------- Composant principal ---------- */
 export default function StatsPlayerDashboard({ data }: { data: PlayerDashboardStats }) {
+  // Sécurité : si jamais "data" n'arrive pas
+  if (!data) {
+    return (
+      <div
+        style={{
+          background: "rgba(20,20,20,.8)",
+          padding: 16,
+          borderRadius: 16,
+          textAlign: "center",
+          color: T.text,
+        }}
+      >
+        Aucune donnée à afficher.
+      </div>
+    );
+  }
+
+  // --- Normalisation : plus AUCUNE valeur par défaut cachée ---
+  const avg3 =
+    Number.isFinite(Number(data.avg3Overall)) && Number(data.avg3Overall) >= 0 ? Number(data.avg3Overall) : 0;
+  const bestVisit =
+    Number.isFinite(Number(data.bestVisit)) && Number(data.bestVisit) >= 0 ? Number(data.bestVisit) : 0;
+  const winRate = clamp(
+    Number.isFinite(Number(data.winRatePct)) ? Number(data.winRatePct) : 0,
+    0,
+    100
+  );
+  const bestCheckout =
+    data.bestCheckout != null && Number.isFinite(Number(data.bestCheckout)) && Number(data.bestCheckout) > 0
+      ? Number(data.bestCheckout)
+      : undefined;
+
+  const distribution: PlayerDistribution = {
+    "0-59": Number(data.distribution?.["0-59"] ?? 0),
+    "60-99": Number(data.distribution?.["60-99"] ?? 0),
+    "100+": Number(data.distribution?.["100+"] ?? 0),
+    "140+": Number(data.distribution?.["140+"] ?? 0),
+    "180": Number(data.distribution?.["180"] ?? 0),
+  };
+
+  const evolution: PlayerGamePoint[] = Array.isArray(data.evolution)
+    ? data.evolution
+        .filter((p) => p && Number.isFinite(Number(p.avg3)))
+        .map((p) => ({ date: p.date ?? "", avg3: Number(p.avg3) }))
+    : [];
+
   const [refL, wL] = useContainerWidth<HTMLDivElement>(320);
   const [refB, wB] = useContainerWidth<HTMLDivElement>(320);
 
@@ -385,21 +431,44 @@ export default function StatsPlayerDashboard({ data }: { data: PlayerDashboardSt
 
       {/* KPIs */}
       <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(1, minmax(0,1fr))" }} className="sm:grid-cols-2 xl:grid-cols-4">
-          <Tile label="Moyenne / 3 flèches" value={`${data.avg3Overall.toFixed(1)} pts`} sub="Visites moyennes" icon={<IconBars color={T.gold} />} />
-          <Tile label="Meilleure volée" value={`${data.bestVisit} pts`} sub="Record personnel" icon={<IconTarget color={T.gold} />} />
-          <Tile label="Taux de victoire" value={`${clamp(data.winRatePct, 0, 100).toFixed(0)} %`} sub="Toutes manches" icon={<IconPercent color={T.gold} />} />
-          <Tile label="Plus haut checkout" value={data.bestCheckout != null ? `${data.bestCheckout}` : "—"} sub="X01" icon={<IconHourglass color={T.gold} />} />
+        <div
+          style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(1, minmax(0,1fr))" }}
+          className="sm:grid-cols-2 xl:grid-cols-4"
+        >
+          <Tile
+            label="Moyenne / 3 flèches"
+            value={`${avg3.toFixed(1)} pts`}
+            sub="Visites moyennes"
+            icon={<IconBars color={T.gold} />}
+          />
+          <Tile
+            label="Meilleure volée"
+            value={`${bestVisit} pts`}
+            sub="Record personnel"
+            icon={<IconTarget color={T.gold} />}
+          />
+          <Tile
+            label="Taux de victoire"
+            value={`${winRate.toFixed(0)} %`}
+            sub="Toutes manches"
+            icon={<IconPercent color={T.gold} />}
+          />
+          <Tile
+            label="Plus haut checkout"
+            value={bestCheckout != null ? `${bestCheckout}` : "—"}
+            sub="X01"
+            icon={<IconHourglass color={T.gold} />}
+          />
         </div>
       </div>
 
       {/* Graphs responsives (aucun dépassement) */}
       <div style={{ display: "grid", gap: 12, marginTop: 16 }} className="lg:grid-cols-2">
         <div ref={refL} style={{ width: "100%" }}>
-          <LineChart points={data.evolution} width={wL} />
+          <LineChart points={evolution} width={wL} />
         </div>
         <div ref={refB} style={{ width: "100%" }}>
-          <BarChart data={data.distribution} width={wB} />
+          <BarChart data={distribution} width={wB} />
         </div>
       </div>
     </section>

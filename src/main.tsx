@@ -54,6 +54,19 @@ if ("serviceWorker" in navigator) {
       caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
     }
   }
+
+// ===== DEBUG: exposer un dump du store dans la console =====
+(async () => {
+  (window as any).dumpStore = async () => {
+    const { loadStore } = await import("./lib/storage");
+    const s = await loadStore<any>();
+    console.log("STORE =", s);
+    console.log("statsByPlayer =", s?.statsByPlayer);
+    console.log("Dernier summary =", Array.isArray(s?.history) ? s.history[s.history.length - 1]?.summary : undefined);
+    return s;
+  };
+})();
+
 }
 
 /* ---------- Point d’entrée React ---------- */

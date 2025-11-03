@@ -15,6 +15,7 @@
 // + Affichage Set/Leg — joueurs & header (depuis le hook)
 // ❗️Paramétrage en amont (X01Setup) + lecture robuste (router/global)
 // ============================================
+
 import React from "react";
 import { useX01Engine } from "../hooks/useX01Engine";
 import Keypad from "../components/Keypad";
@@ -32,6 +33,9 @@ import { commitLegStatsOnce } from "../lib/statsOnce";
 import { saveMatchStats, computeLegStats, aggregateMatch } from "../lib/stats";
 import type { Visit, LegInput, LegStats as RichLegStats } from "../lib/stats";
 
+// Résumé cumulable (⚠️ ajout demandé)
+import { commitMatchSummary, buildX01Summary } from "../lib/playerStats";
+
 // Types app
 import type {
   Profile,
@@ -45,6 +49,49 @@ import type {
 type EnginePlayer = { id: string; name: string };
 type RankItem = { id: string; name: string; score: number };
 type Mode = "simple" | "double" | "master";
+
+/* =========================================================
+   Helper demandé : construit un résumé standardisé X01
+   à partir des stats de la manche (compat avec StatsHub)
+========================================================= */
+// Construit un résumé X01 à partir de tes stats de manche existantes
+function makeX01SummaryFromLeg(opts: {
+  winnerId: string | null;
+  players: Array<{ id: string; name: string }>;
+  // statsParJoueur doit fournir au minimum avg3, bestVisit, darts
+  statsParJoueur: Record<
+    string,
+    {
+      avg3?: number;
+      bestVisit?: number;
+      bestCheckout?: number;
+      darts?: number;
+      win?: boolean;
+      buckets?: Record<string, number>;
+    }
+  >;
+}) {
+  const perPlayer = opts.players.map((p) => {
+    const s = opts.statsParJoueur[p.id] || {};
+    return {
+      playerId: p.id,
+      name: p.name,
+      avg3: Number(s.avg3 || 0),
+      bestVisit: Number(s.bestVisit || 0),
+      bestCheckout: Number(s.bestCheckout || 0),
+      darts: Number(s.darts || 0),
+      win: !!s.win || (opts.winnerId ? opts.winnerId === p.id : false),
+      buckets:
+        s.buckets && Object.keys(s.buckets).length ? s.buckets : undefined,
+    };
+  });
+
+  return buildX01Summary({
+    kind: "x01",
+    winnerId: opts.winnerId,
+    perPlayer,
+  });
+}
 
 /* ---- Dimensions & layout ---- */
 const NAV_HEIGHT = 64;
@@ -240,7 +287,6 @@ function suggestCheckout(rest: number, doubleOut: boolean, dartsLeft: 1 | 2 | 3)
       return [];
     }
   }
-  // (condensé)
   const res: string[] = [];
   const push = (s: string) => res.push(s);
   if (!doubleOut) {
@@ -365,7 +411,8 @@ export default function X01Play({
 
   // ===== onFinish différé
   const [pendingFinish, setPendingFinish] = React.useState<MatchRecord | null>(null);
-  const defaultFinishPolicy: FinishPolicy = finishPref ?? ((safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy);
+  const defaultFinishPolicy: FinishPolicy =
+    finishPref ?? ((safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy);
 
   // ====== Hook moteur (⚠️ propage outMode/inMode + set/leg)
   const {
@@ -416,6 +463,53 @@ export default function X01Play({
         const legStats: RichLegStats = computeLegStats(legInput);
         enriched = { ...(res as any), __legStats: legStats };
         setLastLegResult(enriched as LegResult);
+
+        // >>>>>>> AJOUT : commit du résumé standardisé juste ici (fin de manche)
+        try {
+          const playersArr = ((state.players || []) as EnginePlayer[]).map((p) => ({
+            id: p.id,
+            name: p.name,
+          }));
+
+          // Mappe les stats dans le format attendu
+          const statsParJoueur: Record<
+            string,
+            { avg3?: number; bestVisit?: number; bestCheckout?: number; darts?: number; win?: boolean; buckets?: Record<string, number> }
+          > = {};
+
+          for (const pid of legStats.players) {
+            const pr = (legStats.perPlayer as any)?.[pid] || {};
+            statsParJoueur[pid] = {
+              avg3: typeof pr.avg3 === "number" ? pr.avg3 : 0,
+              bestVisit: typeof pr.bestVisit === "number" ? pr.bestVisit : 0,
+              bestCheckout: typeof pr.bestCheckout === "number" ? pr.bestCheckout : 0,
+              darts: typeof pr.dartsThrown === "number" ? pr.dartsThrown : 0,
+              win: (res.winnerId ?? null) ? res.winnerId === pid : !!pr.win,
+              buckets: pr.buckets && Object.keys(pr.buckets).length ? pr.buckets : undefined,
+            };
+          }
+
+          const x01 = makeX01SummaryFromLeg({
+            winnerId: res.winnerId ?? null,
+            players: playersArr,
+            statsParJoueur,
+          });
+
+          await commitMatchSummary(x01);
+
+          // Optionnel : pousse aussi le résumé dans l'Historique courant
+          try {
+            const id = historyIdRef.current;
+            if (id) {
+              History.upsert({ id, summary: x01, updatedAt: Date.now() } as any);
+            }
+          } catch (e) {
+            console.warn("History.upsert(summary) failed:", e);
+          }
+        } catch (e) {
+          console.warn("[stats] commitMatchSummary failed:", e);
+        }
+        // <<<<<<< FIN AJOUT
       } catch (e) {
         console.warn("computeLegStats() error:", e);
       }
@@ -441,27 +535,31 @@ export default function X01Play({
     const res = lastLegResult;
 
     const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id, name: p.name,
+      id: p.id,
+      name: p.name,
     }));
 
     const legId = `${matchIdRef.current || "local"}::set#${currentSet}::leg#${res.legNo || currentLegInSet}`;
 
     const perPlayer: Record<string, any> = {};
-    const ids = Object.keys(res.darts || {});
+    const ids = Object.keys((res as any).darts || {});
     for (const pid of ids) {
-      const dartsThrown = (res.darts as any)?.[pid] || 0;
-      const visits = (res.visits as any)?.[pid] || Math.ceil(dartsThrown / 3);
-      const avg3 = (res.avg3 as any)?.[pid] || 0;
+      const dartsThrown = (res as any)?.darts?.[pid] || 0;
+      const visits = (res as any)?.visits?.[pid] || Math.ceil(dartsThrown / 3);
+      const avg3 = (res as any)?.avg3?.[pid] || 0;
       const pointsScored = Math.round(avg3 * visits);
 
       perPlayer[pid] = {
-        dartsThrown, pointsScored, visits, avg3,
-        bestVisit: (res.bestVisit as any)?.[pid] || 0,
-        highestCheckout: (res.bestCheckout as any)?.[pid] || 0,
-        tons60: (res.h60 as any)?.[pid] || 0,
-        tons100: (res.h100 as any)?.[pid] || 0,
-        tons140: (res.h140 as any)?.[pid] || 0,
-        ton180: (res.h180 as any)?.[pid] || 0,
+        dartsThrown,
+        pointsScored,
+        visits,
+        avg3,
+        bestVisit: (res as any)?.bestVisit?.[pid] || 0,
+        highestCheckout: (res as any)?.bestCheckout?.[pid] || 0,
+        tons60: (res as any)?.h60?.[pid] || 0,
+        tons100: (res as any)?.h100?.[pid] || 0,
+        tons140: (res as any)?.h140?.[pid] || 0,
+        ton180: (res as any)?.h180?.[pid] || 0,
         checkoutAttempts: 0,
         checkoutHits: 0,
         legsPlayed: 1,
@@ -472,7 +570,7 @@ export default function X01Play({
     commitLegStatsOnce({
       legId,
       kind: "x01",
-      finishedAt: res.finishedAt ?? Date.now(),
+      finishedAt: (res as any).finishedAt ?? Date.now(),
       players: playersNow,
       winnerId: res.winnerId,
       perPlayer,
@@ -481,11 +579,21 @@ export default function X01Play({
 
   // Persistance “en cours”
   function buildEngineLike(dartsThisTurn: UIDart[], winnerId?: string | null) {
-    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map((p) => ({ id: p.id, name: p.name }));
+    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map((p) => ({
+      id: p.id,
+      name: p.name,
+    }));
     const scores: number[] = playersArr.map((p) => scoresByPlayer[p.id] ?? startScore);
     const idx = playersArr.findIndex((p) => p.id === (currentPlayer?.id as string));
     return {
-      rules: { start: startScore, doubleOut: outM !== "simple", setsToWin: setsTarget, legsPerSet: legsTarget, outMode: outM, inMode: inM },
+      rules: {
+        start: startScore,
+        doubleOut: outM !== "simple",
+        setsToWin: setsTarget,
+        legsPerSet: legsTarget,
+        outMode: outM,
+        inMode: inM,
+      },
       players: playersArr,
       scores,
       currentIndex: idx >= 0 ? idx : 0,
@@ -517,20 +625,30 @@ export default function X01Play({
   const [pointsSum, setPointsSum] = React.useState<Record<string, number>>({});
   const [visitsCount, setVisitsCount] = React.useState<Record<string, number>>({});
   const [bestVisitByPlayer, setBestVisitByPlayer] = React.useState<Record<string, number>>({});
-  const [hitsByPlayer, setHitsByPlayer] = React.useState<Record<string, { h60: number; h100: number; h140: number; h180: number }>>({});
-  const [impactByPlayer, setImpactByPlayer] = React.useState<Record<string, { doubles: number; triples: number; bulls: number }>>({});
+  const [hitsByPlayer, setHitsByPlayer] = React.useState<
+    Record<string, { h60: number; h100: number; h140: number; h180: number }>
+  >({});
+  const [impactByPlayer, setImpactByPlayer] = React.useState<
+    Record<string, { doubles: number; triples: number; bulls: number }>
+  >({});
 
   type Bucket = { inner: number; outer: number; double: number; triple: number; miss: number };
   const [perPlayerBuckets, setPerPlayerBuckets] = React.useState<Record<string, Record<string, Bucket>>>({});
 
   // SFX
-  const dartHit = React.useMemo(() => createAudio(["/sounds/dart-hit.mp3", "/sounds/dart-hit.ogg"]), []);
+  const dartHit = React.useMemo(
+    () => createAudio(["/sounds/dart-hit.mp3", "/sounds/dart-hit.ogg"]),
+    []
+  );
   const bustSnd = React.useMemo(() => createAudio(["/sounds/bust.mp3", "/sounds/bust.ogg"]), []);
   const voiceOn = React.useMemo<boolean>(() => (safeGetLocalStorage("opt_voice") ?? "true") === "true", []);
 
   function playDartSfx(d: UIDart, nextThrow: UIDart[]) {
     const visitSum = nextThrow.reduce((s, x) => s + dartValue(x), 0);
-    if (nextThrow.length === 3 && visitSum === 180) { playSound("180"); return; }
+    if (nextThrow.length === 3 && visitSum === 180) {
+      playSound("180");
+      return;
+    }
     if (d.v === 25 && d.mult === 2) return playSound("doublebull");
     if (d.v === 25 && d.mult === 1) return playSound("bull");
     if (d.mult === 3) return playSound("triple");
@@ -548,7 +666,8 @@ export default function X01Play({
   const [multiplier, setMultiplier] = React.useState<1 | 2 | 3>(1);
   const [playersOpen, setPlayersOpen] = React.useState(true);
 
-  const currentRemaining = scoresByPlayer[(currentPlayer?.id as string) || ""] ?? startScore;
+  const currentRemaining =
+    scoresByPlayer[(currentPlayer?.id as string) || ""] ?? startScore;
   const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
   const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
 
@@ -557,7 +676,10 @@ export default function X01Play({
     const d: UIDart = { v: n, mult: n === 0 ? 1 : multiplier };
     const next = [...currentThrow, d];
     playDartSfx(d, next);
-    try { dartHit.currentTime = 0; dartHit.play(); } catch {}
+    try {
+      (dartHit as any).currentTime = 0;
+      dartHit.play();
+    } catch {}
     (navigator as any).vibrate?.(25);
     setCurrentThrow(next);
     setMultiplier(1);
@@ -567,7 +689,10 @@ export default function X01Play({
     const d: UIDart = { v: 25, mult: multiplier === 2 ? 2 : 1 };
     const next = [...currentThrow, d];
     playDartSfx(d, next);
-    try { dartHit.currentTime = 0; dartHit.play(); } catch {}
+    try {
+      (dartHit as any).currentTime = 0;
+      dartHit.play();
+    } catch {}
     (navigator as any).vibrate?.(25);
     setCurrentThrow(next);
     setMultiplier(1);
@@ -600,10 +725,22 @@ export default function X01Play({
     }
 
     // Stats live
-    setDartsCount((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + currentThrow.length }));
-    setPointsSum((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + ptsForStats }));
-    setVisitsCount((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + 1 }));
-    setBestVisitByPlayer((m) => ({ ...m, [currentPlayer.id]: Math.max(m[currentPlayer.id] || 0, volleyPts) }));
+    setDartsCount((m) => ({
+      ...m,
+      [currentPlayer.id]: (m[currentPlayer.id] || 0) + currentThrow.length,
+    }));
+    setPointsSum((m) => ({
+      ...m,
+      [currentPlayer.id]: (m[currentPlayer.id] || 0) + ptsForStats,
+    }));
+    setVisitsCount((m) => ({
+      ...m,
+      [currentPlayer.id]: (m[currentPlayer.id] || 0) + 1,
+    }));
+    setBestVisitByPlayer((m) => ({
+      ...m,
+      [currentPlayer.id]: Math.max(m[currentPlayer.id] || 0, volleyPts),
+    }));
     setHitsByPlayer((m) => {
       const prev = m[currentPlayer.id] || { h60: 0, h100: 0, h140: 0, h180: 0 };
       const add = { ...prev };
@@ -625,15 +762,25 @@ export default function X01Play({
     setPerPlayerBuckets((m) => {
       const cur = m[currentPlayer.id] || {};
       const key = `set-${currentSet}-leg-${currentLegInSet}`;
-      const b = cur[key] || { inner: 0, outer: 0, double: 0, triple: 0, miss: 0 };
+      const b = (cur as any)[key] || {
+        inner: 0,
+        outer: 0,
+        double: 0,
+        triple: 0,
+        miss: 0,
+      };
       for (const d of currentThrow) {
         if (d.v === 0) b.miss++;
-        else if (d.v === 25) { if (d.mult === 2) { b.inner++; b.double++; } else b.outer++; }
-        else if (d.mult === 2) b.double++;
+        else if (d.v === 25) {
+          if (d.mult === 2) {
+            b.inner++;
+            b.double++;
+          } else b.outer++;
+        } else if (d.mult === 2) b.double++;
         else if (d.mult === 3) b.triple++;
         else b.outer++;
       }
-      return { ...m, [currentPlayer.id]: { ...cur, [key]: b } };
+      return { ...m, [currentPlayer.id]: { ...(cur as any), [key]: b } };
     });
 
     persistAfterThrow(currentThrow);
@@ -643,13 +790,20 @@ export default function X01Play({
     setLastBustByPlayer((m) => ({ ...m, [currentPlayer.id]: !!willBust }));
 
     if (willBust) {
-      try { bustSnd.currentTime = 0; bustSnd.play(); } catch {}
+      try {
+        (bustSnd as any).currentTime = 0;
+        bustSnd.play();
+      } catch {}
       (navigator as any).vibrate?.([120, 60, 140]);
     } else {
       const voice = voiceOn && "speechSynthesis" in window;
       if (voice) {
-        const u = new SpeechSynthesisUtterance(`${currentPlayer.name || ""}, ${volleyPts} points`);
-        u.rate = 1; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+        const u = new SpeechSynthesisUtterance(
+          `${currentPlayer.name || ""}, ${volleyPts} points`
+        );
+        u.rate = 1;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
       }
     }
 
@@ -657,15 +811,25 @@ export default function X01Play({
     setMultiplier(1);
   }
 
-  function handleBackspace() { playSound("dart-hit"); setCurrentThrow((t) => t.slice(0, -1)); }
-  function handleCancel() { playSound("bust"); if (currentThrow.length) setCurrentThrow((t) => t.slice(0, -1)); else undoLast?.(); }
+  function handleBackspace() {
+    playSound("dart-hit");
+    setCurrentThrow((t) => t.slice(0, -1));
+  }
+  function handleCancel() {
+    playSound("bust");
+    if (currentThrow.length) setCurrentThrow((t) => t.slice(0, -1));
+    else undoLast?.();
+  }
 
   const liveRanking = React.useMemo<RankItem[]>(() => {
     const items: RankItem[] = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id, name: p.name, score: scoresByPlayer[p.id] ?? startScore,
+      id: p.id,
+      name: p.name,
+      score: scoresByPlayer[p.id] ?? startScore,
     }));
     items.sort((a, b) => {
-      const az = a.score === 0, bz = b.score === 0;
+      const az = a.score === 0,
+        bz = b.score === 0;
       if (az && !bz) return -1;
       if (!az && bz) return 1;
       return a.score - b.score;
@@ -675,42 +839,85 @@ export default function X01Play({
 
   function chipStyle(d?: UIDart, red = false): React.CSSProperties {
     if (!d)
-      return { background: "rgba(255,255,255,.06)", color: "#bbb", border: "1px solid rgba(255,255,255,.08)" };
+      return {
+        background: "rgba(255,255,255,.06)",
+        color: "#bbb",
+        border: "1px solid rgba(255,255,255,.08)",
+      };
     if (red)
-      return { background: "rgba(200,30,30,.18)", color: "#ff8a8a", border: "1px solid rgba(255,80,80,.35)" };
+      return {
+        background: "rgba(200,30,30,.18)",
+        color: "#ff8a8a",
+        border: "1px solid rgba(255,80,80,.35)",
+      };
     if (d.v === 25 && d.mult === 2)
-      return { background: "rgba(13,160,98,.18)", color: "#8ee6bf", border: "1px solid rgba(13,160,98,.35)" };
+      return {
+        background: "rgba(13,160,98,.18)",
+        color: "#8ee6bf",
+        border: "1px solid rgba(13,160,98,.35)",
+      };
     if (d.v === 25)
-      return { background: "rgba(13,160,98,.12)", color: "#7bd6b0", border: "1px solid rgba(13,160,98,.3)" };
+      return {
+        background: "rgba(13,160,98,.12)",
+        color: "#7bd6b0",
+        border: "1px solid rgba(13,160,98,.3)",
+      };
     if (d.mult === 3)
-      return { background: "rgba(179,68,151,.18)", color: "#ffd0ff", border: "1px solid rgba(179,68,151,.35)" };
+      return {
+        background: "rgba(179,68,151,.18)",
+        color: "#ffd0ff",
+        border: "1px solid rgba(179,68,151,.35)",
+      };
     if (d.mult === 2)
-      return { background: "rgba(46,150,193,.18)", color: "#cfeaff", border: "1px solid rgba(46,150,193,.35)" };
-    return { background: "rgba(255,187,51,.12)", color: "#ffc63a", border: "1px solid rgba(255,187,51,.4)" };
+      return {
+        background: "rgba(46,150,193,.18)",
+        color: "#cfeaff",
+        border: "1px solid rgba(46,150,193,.35)",
+      };
+    return {
+      background: "rgba(255,187,51,.12)",
+      color: "#ffc63a",
+      border: "1px solid rgba(255,187,51,.4)",
+    };
   }
 
   const goldBtn: React.CSSProperties = {
-    borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,180,0,.3)",
-    background: "linear-gradient(180deg, #ffc63a, #ffaf00)", color: "#1a1a1a",
-    fontWeight: 900, boxShadow: "0 10px 22px rgba(255,170,0,.28)", cursor: "pointer",
+    borderRadius: 10,
+    padding: "6px 12px",
+    border: "1px solid rgba(255,180,0,.3)",
+    background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+    color: "#1a1a1a",
+    fontWeight: 900,
+    boxShadow: "0 10px 22px rgba(255,170,0,.28)",
+    cursor: "pointer",
   };
 
   const flushPendingFinish = React.useCallback(() => {
     if (pendingFinish) {
       const m: MatchRecord = pendingFinish;
-      setPendingFinish(null); setOverlayOpen(false); onFinish(m); return;
+      setPendingFinish(null);
+      setOverlayOpen(false);
+      onFinish(m);
+      return;
     }
     const rec: MatchRecord = makeX01RecordFromEngineCompat({
       engine: buildEngineLike([], winner?.id ?? null),
       existingId: historyIdRef.current,
     });
-    History.upsert(rec); historyIdRef.current = rec.id; onFinish(rec);
+    History.upsert(rec);
+    historyIdRef.current = rec.id;
+    onFinish(rec);
   }, [pendingFinish, onFinish, winner?.id]);
 
   if (!state.players?.length) {
     return (
       <div style={{ padding: 16, maxWidth: CONTENT_MAX, margin: "0 auto" }}>
-        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>← Quitter</button>
+        <button
+          onClick={() => (pendingFinish ? flushPendingFinish() : onExit())}
+          style={goldBtn}
+        >
+          ← Quitter
+        </button>
         <p>Aucun joueur sélectionné. Reviens au lobby.</p>
       </div>
     );
@@ -731,8 +938,9 @@ export default function X01Play({
     prevIsOver.current = isOver;
 
     if (justFinished) {
+      // 1) Persistance du match "in_progress/finished"
       persistOnFinish();
-
+    
       try {
         const maybeLeg: RichLegStats | undefined = (lastLegResult as any)?.__legStats;
         if (maybeLeg) {
@@ -747,13 +955,16 @@ export default function X01Play({
             rules: {
               x01Start: startScore,
               finishPolicy: outM !== "simple" ? "doubleOut" : "singleOut",
-              setsToWin: setsTarget, legsPerSet: legsTarget,
+              setsToWin: setsTarget,
+              legsPerSet: legsTarget,
             },
             players: playersArr.map((p) => p.id),
             winnerId: standing[0]?.id ?? winner?.id ?? playersArr[0]?.id,
             computed: m,
           };
           saveMatchStats(rec);
+    
+          // (Conserve aussi le commit "summary" plus haut à la fin de chaque manche)
         }
       } catch (e) {
         console.warn("aggregateMatch/saveMatchStats:", e);
@@ -762,17 +973,44 @@ export default function X01Play({
 
     const voice = (safeGetLocalStorage("opt_voice") ?? "true") === "true";
     if (!justFinished || !voice || !("speechSynthesis" in window)) return;
-    const ords = ["", "Deuxième", "Troisième", "Quatrième", "Cinquième", "Sixième", "Septième", "Huitième"];
+    const ords = [
+      "",
+      "Deuxième",
+      "Troisième",
+      "Quatrième",
+      "Cinquième",
+      "Sixième",
+      "Septième",
+      "Huitième",
+    ];
     const ordered = [...liveRanking].sort((a, b) => {
-      const az = a.score === 0, bz = b.score === 0;
-      if (az && !bz) return -1; if (!az && bz) return 1; return a.score - b.score;
+      const az = a.score === 0,
+        bz = b.score === 0;
+      if (az && !bz) return -1;
+      if (!az && bz) return 1;
+      return a.score - b.score;
     });
     const parts: string[] = [];
     if (ordered[0]) parts.push(`Victoire ${ordered[0].name}`);
-    for (let i = 1; i < ordered.length && i < 8; i++) parts.push(`${ords[i]} ${ordered[i].name}`);
+    for (let i = 1; i < ordered.length && i < 8; i++)
+      parts.push(`${ords[i]} ${ordered[i].name}`);
     const text = parts.join(". ") + ".";
-    const u = new SpeechSynthesisUtterance(text); u.rate = 1; window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
-  }, [isOver, liveRanking, winner?.id, lastLegResult, state.players, scoresByPlayer, startScore, setsTarget, legsTarget, outM]);
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  }, [
+    isOver,
+    liveRanking,
+    winner?.id,
+    lastLegResult,
+    state.players,
+    scoresByPlayer,
+    startScore,
+    setsTarget,
+    legsTarget,
+    outM,
+  ]);
 
   const showEndBanner = isOver && !pendingFirstWin && !isContinuing;
 
@@ -780,9 +1018,17 @@ export default function X01Play({
   const [bgMusic] = React.useState(() => new Audio("/sounds/victory.mp3"));
   React.useEffect(() => {
     if (overlayOpen || showEndBanner) {
-      try { bgMusic.loop = true; bgMusic.volume = 0.6; bgMusic.currentTime = 0; bgMusic.play().catch(() => {}); } catch {}
+      try {
+        bgMusic.loop = true;
+        bgMusic.volume = 0.6;
+        (bgMusic as any).currentTime = 0;
+        bgMusic.play().catch(() => {});
+      } catch {}
     } else {
-      try { bgMusic.pause(); bgMusic.currentTime = 0; } catch {}
+      try {
+        bgMusic.pause();
+        (bgMusic as any).currentTime = 0;
+      } catch {}
     }
   }, [overlayOpen, showEndBanner, bgMusic]);
 
@@ -848,10 +1094,30 @@ export default function X01Play({
   }, [isOver]);
 
   return (
-    <div className="x01play-container" style={{ paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16 }}>
+    <div
+      className="x01play-container"
+      style={{
+        paddingBottom: Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + NAV_HEIGHT + 16,
+      }}
+    >
       {/* Barre haute */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, maxWidth: CONTENT_MAX, marginInline: "auto", paddingInline: 12 }}>
-        <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>← Quitter</button>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 12,
+          maxWidth: CONTENT_MAX,
+          marginInline: "auto",
+          paddingInline: 12,
+        }}
+      >
+        <button
+          onClick={() => (pendingFinish ? flushPendingFinish() : onExit())}
+          style={goldBtn}
+        >
+          ← Quitter
+        </button>
         <div />
       </div>
 
@@ -859,7 +1125,9 @@ export default function X01Play({
       <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 12 }}>
         <HeaderBlock
           currentPlayer={currentPlayer}
-          currentAvatar={(currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null}
+          currentAvatar={
+            (currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null
+          }
           currentRemaining={currentRemaining}
           currentThrow={currentThrow}
           doubleOut={outM !== "simple"}
@@ -930,7 +1198,9 @@ export default function X01Play({
       </div>
 
       {/* Modale CONTINUER ? */}
-      {pendingFirstWin && <ContinueModal endNow={endNow} continueAfterFirst={continueAfterFirst} />}
+      {pendingFirstWin && (
+        <ContinueModal endNow={endNow} continueAfterFirst={continueAfterFirst} />
+      )}
 
       {/* Overlay fin de manche */}
       <EndOfLegOverlay
@@ -941,7 +1211,10 @@ export default function X01Play({
             Object.fromEntries(
               ((state.players || []) as EnginePlayer[]).map((p) => {
                 const prof = profileById[p.id];
-                return [p.id, { id: p.id, name: p.name, avatarDataUrl: prof?.avatarDataUrl }];
+                return [
+                  p.id,
+                  { id: p.id, name: p.name, avatarDataUrl: (prof as any)?.avatarDataUrl },
+                ];
               })
             ),
           [state.players, profileById]
@@ -953,7 +1226,8 @@ export default function X01Play({
             const playersNow = ((state.players || []) as EnginePlayer[]).map((p) => ({
               id: p.id,
               name: p.name,
-              avatarDataUrl: (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as string | null,
+              avatarDataUrl: (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ??
+                null) as string | null,
             }));
             History.upsert({
               kind: "leg",
@@ -962,10 +1236,15 @@ export default function X01Play({
               players: playersNow,
               updatedAt: Date.now(),
               createdAt: Date.now(),
-              payload: { ...res, meta: { currentSet, currentLegInSet, setsTarget, legsTarget } },
+              payload: {
+                ...res,
+                meta: { currentSet, currentLegInSet, setsTarget, legsTarget },
+              },
             } as any);
             (navigator as any).vibrate?.(50);
-          } catch (e) { console.warn("Impossible de sauvegarder la manche:", e); }
+          } catch (e) {
+            console.warn("Impossible de sauvegarder la manche:", e);
+          }
           setOverlayOpen(false);
         }}
       />
@@ -1006,48 +1285,113 @@ export default function X01Play({
     legsTarget: number;
   }) {
     const {
-      currentPlayer, currentAvatar, currentRemaining, currentThrow, doubleOut, liveRanking,
-      curDarts, curM3D, bestVisit, currentSet, currentLegInSet, setsTarget, legsTarget
+      currentPlayer,
+      currentAvatar,
+      currentRemaining,
+      currentThrow,
+      doubleOut,
+      liveRanking,
+      curDarts,
+      curM3D,
+      bestVisit,
+      currentSet,
+      currentLegInSet,
+      setsTarget,
+      legsTarget,
     } = props;
     const volleyTotal = currentThrow.reduce((s, d) => s + dartValue(d), 0);
     const predictedAfter = Math.max(currentRemaining - volleyTotal, 0);
 
     const chip: React.CSSProperties = {
-      display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px",
-      borderRadius: 999, border: "1px solid rgba(255,200,80,.35)",
-      background: "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
-      color: "#ffcf57", fontWeight: 800, fontSize: 12, boxShadow: "0 6px 18px rgba(255,195,26,.15)", whiteSpace: "nowrap",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,200,80,.35)",
+      background:
+        "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
+      color: "#ffcf57",
+      fontWeight: 800,
+      fontSize: 12,
+      boxShadow: "0 6px 18px rgba(255,195,26,.15)",
+      whiteSpace: "nowrap",
     };
 
     return (
       <div
         style={{
-          position: "sticky", top: 0, zIndex: 40, transform: `scale(${HEADER_SCALE})`, transformOrigin: "top center",
-          background: "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.10), transparent 55%), linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.8))",
-          border: "1px solid rgba(255,255,255,.08)", borderRadius: 18, padding: HEADER_OUTER_PADDING,
-          boxShadow: "0 10px 30px rgba(0,0,0,.35)", marginBottom: 10,
+          position: "sticky",
+          top: 0,
+          zIndex: 40,
+          transform: `scale(${HEADER_SCALE})`,
+          transformOrigin: "top center",
+          background:
+            "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.10), transparent 55%), linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.8))",
+          border: "1px solid rgba(255,255,255,.08)",
+          borderRadius: 18,
+          padding: HEADER_OUTER_PADDING,
+          boxShadow: "0 10px 30px rgba(0,0,0,.35)",
+          marginBottom: 10,
         }}
       >
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
           {/* Colonne gauche : Avatar + Nom + Mini-Stats */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              alignItems: "center",
+            }}
+          >
             <div
               style={{
-                padding: 6, borderRadius: "50%",
-                WebkitMaskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
-                maskImage: "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
+                padding: 6,
+                borderRadius: "50%",
+                WebkitMaskImage:
+                  "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
+                maskImage:
+                  "radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%)",
               }}
             >
               <div
                 style={{
-                  width: AVATAR_SIZE, height: AVATAR_SIZE, borderRadius: "50%", overflow: "hidden",
-                  background: "linear-gradient(180deg, #1b1b1f, #111114)", boxShadow: "0 8px 28px rgba(0,0,0,.35)",
+                  width: AVATAR_SIZE,
+                  height: AVATAR_SIZE,
+                  borderRadius: "50%",
+                  overflow: "hidden",
+                  background: "linear-gradient(180deg, #1b1b1f, #111114)",
+                  boxShadow: "0 8px 28px rgba(0,0,0,.35)",
                 }}
               >
                 {currentAvatar ? (
-                  <img src={currentAvatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <img
+                    src={currentAvatar}
+                    alt=""
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
                 ) : (
-                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontWeight: 700 }}>?</div>
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#999",
+                      fontWeight: 700,
+                    }}
+                  >
+                    ?
+                  </div>
                 )}
               </div>
             </div>
@@ -1068,7 +1412,17 @@ export default function X01Play({
 
           {/* Centre : score + volée + checkout + chips Set/Leg + mini-classement */}
           <div style={{ textAlign: "center", minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 72, lineHeight: 1, fontWeight: 900, color: "#ffcf57", textShadow: "0 4px 20px rgba(255,195,26,.25)", letterSpacing: 0.5, marginTop: 2 }}>
+            <div
+              style={{
+                fontSize: 72,
+                lineHeight: 1,
+                fontWeight: 900,
+                color: "#ffcf57",
+                textShadow: "0 4px 20px rgba(255,195,26,.25)",
+                letterSpacing: 0.5,
+                marginTop: 2,
+              }}
+            >
               {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
             </div>
 
@@ -1076,15 +1430,32 @@ export default function X01Play({
             <div style={{ marginTop: 2, display: "flex", gap: 6, justifyContent: "center" }}>
               {[0, 1, 2].map((i: number) => {
                 const d = currentThrow[i];
-                const afterNow = currentRemaining - currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
-                const wouldBust = afterNow < 0 || (doubleOut && afterNow === 0 && !isDoubleFinish(currentThrow.slice(0, i + 1)));
+                const afterNow =
+                  currentRemaining -
+                  currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
+                const wouldBust =
+                  afterNow < 0 ||
+                  (doubleOut &&
+                    afterNow === 0 &&
+                    !isDoubleFinish(currentThrow.slice(0, i + 1)));
                 const st = chipStyle(d, wouldBust);
                 return (
-                  <span key={i} style={{
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    minWidth: 44, height: 32, padding: "0 12px", borderRadius: 10,
-                    border: st.border as string, background: st.background as string, color: st.color as string, fontWeight: 800,
-                  }}>
+                  <span
+                    key={i}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      minWidth: 44,
+                      height: 32,
+                      padding: "0 12px",
+                      borderRadius: 10,
+                      border: st.border as string,
+                      background: st.background as string,
+                      color: st.color as string,
+                      fontWeight: 800,
+                    }}
+                  >
                     {fmt(d)}
                   </span>
                 );
@@ -1095,27 +1466,46 @@ export default function X01Play({
             <div style={{ marginTop: 2, display: "flex", justifyContent: "center" }}>
               <span style={chip}>
                 <span>Set {currentSet}/{setsTarget}</span>
-                <span style={{ opacity: .6 }}>•</span>
+                <span style={{ opacity: 0.6 }}>•</span>
                 <span>Leg {currentLegInSet}/{legsTarget}</span>
               </span>
             </div>
 
             {/* Checkout */}
             {(() => {
-              const only = suggestCheckout(predictedAfter, outM !== "simple", (3 - currentThrow.length) as 1 | 2 | 3)[0];
+              const only = suggestCheckout(
+                predictedAfter,
+                outM !== "simple",
+                (3 - currentThrow.length) as 1 | 2 | 3
+              )[0];
               if (!only || currentThrow.length >= 3) return null;
               return (
                 <div style={{ marginTop: 4, display: "flex", justifyContent: "center" }}>
-                  <div style={{
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.08)",
-                    background: "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
-                    minWidth: 180, maxWidth: 520,
-                  }}>
-                    <span style={{
-                      padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(255,187,51,.4)",
-                      background: "rgba(255,187,51,.12)", color: "#ffc63a", fontWeight: 900, whiteSpace: "nowrap",
-                    }}>
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 6,
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,255,255,.08)",
+                      background:
+                        "radial-gradient(120% 120% at 50% 0%, rgba(255,195,26,.10), rgba(30,30,34,.95))",
+                      minWidth: 180,
+                      maxWidth: 520,
+                    }}
+                  >
+                    <span
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,187,51,.4)",
+                        background: "rgba(255,187,51,.12)",
+                        color: "#ffc63a",
+                        fontWeight: 900,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
                       {only}
                     </span>
                   </div>
@@ -1159,15 +1549,36 @@ export default function X01Play({
     legsTarget: number;
   }) {
     const {
-      playersOpen, setPlayersOpen, statePlayers, profileById, lastByPlayer, lastBustByPlayer,
-      dartsCount, pointsSum, start, scoresByPlayer, currentSet, currentLegInSet, setsTarget, legsTarget,
+      playersOpen,
+      setPlayersOpen,
+      statePlayers,
+      profileById,
+      lastByPlayer,
+      lastBustByPlayer,
+      dartsCount,
+      pointsSum,
+      start,
+      scoresByPlayer,
+      currentSet,
+      currentLegInSet,
+      setsTarget,
+      legsTarget,
     } = props;
 
     const headerChip: React.CSSProperties = {
-      display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px",
-      borderRadius: 999, border: "1px solid rgba(255,200,80,.32)",
-      background: "linear-gradient(180deg, rgba(255,195,26,.10), rgba(28,28,32,.95))",
-      color: "#ffcf57", fontWeight: 800, fontSize: 12, boxShadow: "0 6px 16px rgba(255,195,26,.12)", whiteSpace: "nowrap",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,200,80,.32)",
+      background:
+        "linear-gradient(180deg, rgba(255,195,26,.10), rgba(28,28,32,.95))",
+      color: "#ffcf57",
+      fontWeight: 800,
+      fontSize: 12,
+      boxShadow: "0 6px 16px rgba(255,195,26,.12)",
+      whiteSpace: "nowrap",
     };
 
     return (
@@ -1182,18 +1593,32 @@ export default function X01Play({
         }}
       >
         {/* ENTÊTE : JOUEURS + Set/Leg + disclosure */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 6px 8px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "4px 6px 8px",
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{
-              padding: "6px 10px", borderRadius: 8, background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
-              color: "#151517", fontWeight: 900, letterSpacing: .4,
-            }}>
+            <span
+              style={{
+                padding: "6px 10px",
+                borderRadius: 8,
+                background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+                color: "#151517",
+                fontWeight: 900,
+                letterSpacing: 0.4,
+              }}
+            >
               JOUEURS
             </span>
 
             <span style={headerChip}>
               <span>Set {currentSet}/{setsTarget}</span>
-              <span style={{ opacity: .6 }}>•</span>
+              <span style={{ opacity: 0.6 }}>•</span>
               <span>Leg {currentLegInSet}/{legsTarget}</span>
             </span>
           </div>
@@ -1202,9 +1627,14 @@ export default function X01Play({
             onClick={() => setPlayersOpen(!playersOpen)}
             aria-label="Afficher / masquer les joueurs"
             style={{
-              width: 30, height: 30, borderRadius: 10,
-              border: "1px solid rgba(255,255,255,.12)", background: "transparent",
-              color: "#e8e8ec", cursor: "pointer", fontWeight: 900
+              width: 30,
+              height: 30,
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,.12)",
+              background: "transparent",
+              color: "#e8e8ec",
+              cursor: "pointer",
+              fontWeight: 900,
             }}
           >
             {playersOpen ? "▴" : "▾"}
@@ -1212,7 +1642,14 @@ export default function X01Play({
         </div>
 
         {playersOpen && (
-          <div style={{ marginTop: 4, maxHeight: `${PLAYERS_LIST_MAX_H_VH}vh`, overflow: "auto", paddingRight: 4 }}>
+          <div
+            style={{
+              marginTop: 4,
+              maxHeight: `${PLAYERS_LIST_MAX_H_VH}vh`,
+              overflow: "auto",
+              paddingRight: 4,
+            }}
+          >
             {statePlayers.map((p) => {
               const prof = profileById[p.id];
               const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
@@ -1226,17 +1663,48 @@ export default function X01Play({
                 <div
                   key={p.id}
                   style={{
-                    display: "flex", alignItems: "center", gap: PLAYER_ROW_GAP,
-                    padding: `${PLAYER_ROW_PAD_Y}px 10px`, borderRadius: 12,
-                    background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
-                    border: "1px solid rgba(255,255,255,.07)", marginBottom: 6,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: PLAYER_ROW_GAP,
+                    padding: `${PLAYER_ROW_PAD_Y}px 10px`,
+                    borderRadius: 12,
+                    background:
+                      "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                    border: "1px solid rgba(255,255,255,.07)",
+                    marginBottom: 6,
                   }}
                 >
-                  <div style={{ width: PLAYER_ROW_AVATAR, height: PLAYER_ROW_AVATAR, borderRadius: "50%", overflow: "hidden", background: "rgba(255,255,255,.06)", flex: "0 0 auto" }}>
+                  <div
+                    style={{
+                      width: PLAYER_ROW_AVATAR,
+                      height: PLAYER_ROW_AVATAR,
+                      borderRadius: "50%",
+                      overflow: "hidden",
+                      background: "rgba(255,255,255,.06)",
+                      flex: "0 0 auto",
+                    }}
+                  >
                     {avatarSrc ? (
-                      <img src={avatarSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      <img
+                        src={avatarSrc}
+                        alt=""
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
                     ) : (
-                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontWeight: 700, fontSize: 12 }}>?</div>
+                      <div
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#999",
+                          fontWeight: 700,
+                          fontSize: 12,
+                        }}
+                      >
+                        ?
+                      </div>
                     )}
                   </div>
 
@@ -1250,10 +1718,18 @@ export default function X01Play({
                             <span
                               key={i}
                               style={{
-                                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                minWidth: 34, height: 24, padding: "0 8px", borderRadius: 8,
-                                border: st.border as string, background: st.background as string, color: st.color as string,
-                                fontWeight: 800, fontSize: 12,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                minWidth: 34,
+                                height: 24,
+                                padding: "0 8px",
+                                borderRadius: 8,
+                                border: st.border as string,
+                                background: st.background as string,
+                                color: st.color as string,
+                                fontWeight: 800,
+                                fontSize: 12,
                               }}
                             >
                               {fmt(d)}
@@ -1270,7 +1746,13 @@ export default function X01Play({
                     </div>
                   </div>
 
-                  <div style={{ fontWeight: 900, color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57" }}>
+                  <div
+                    style={{
+                      fontWeight: 900,
+                      color:
+                        (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57",
+                    }}
+                  >
                     {scoresByPlayer[p.id] ?? start}
                   </div>
                 </div>
@@ -1282,36 +1764,68 @@ export default function X01Play({
     );
   }
 
-  function ContinueModal({ endNow, continueAfterFirst }: { endNow: () => void; continueAfterFirst: () => void }) {
+  function ContinueModal({
+    endNow,
+    continueAfterFirst,
+  }: {
+    endNow: () => void;
+    continueAfterFirst: () => void;
+  }) {
     return (
       <div
         style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", backdropFilter: "blur(4px)",
-          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16,
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,.55)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+          padding: 16,
         }}
       >
         <div
           style={{
-            width: 460, background: "linear-gradient(180deg, #17181c, #101116)",
-            border: "1px solid rgba(255,255,255,.08)", borderRadius: 16, padding: 18,
+            width: 460,
+            background: "linear-gradient(180deg, #17181c, #101116)",
+            border: "1px solid rgba(255,255,255,.08)",
+            borderRadius: 16,
+            padding: 18,
           }}
         >
           <h3 style={{ margin: "0 0 8px" }}>Continuer la manche ?</h3>
           <p style={{ opacity: 0.8, marginTop: 0 }}>
-            Le premier joueur a terminé. Tu peux <b>terminer maintenant</b> (classement figé) ou <b>continuer</b> jusqu’à l’avant-dernier.
+            Le premier joueur a terminé. Tu peux <b>terminer maintenant</b> (classement figé)
+            ou <b>continuer</b> jusqu’à l’avant-dernier.
           </p>
           <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <button
               onClick={endNow}
-              style={{ appearance: "none" as const, padding: "10px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,.14)", background: "transparent", color: "#eee", cursor: "pointer" }}
+              style={{
+                appearance: "none" as const,
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,.14)",
+                background: "transparent",
+                color: "#eee",
+                cursor: "pointer",
+              }}
             >
               Terminer maintenant
             </button>
             <button
               onClick={continueAfterFirst}
               style={{
-                appearance: "none" as const, padding: "10px 14px", borderRadius: 12, border: "1px solid transparent",
-                background: "linear-gradient(180deg, #f0b12a, #c58d19)", color: "#141417", fontWeight: 700, cursor: "pointer", boxShadow: "0 0 24px rgba(240,177,42,.25)",
+                appearance: "none" as const,
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid transparent",
+                background: "linear-gradient(180deg, #f0b12a, #c58d19)",
+                color: "#141417",
+                fontWeight: 700,
+                cursor: "pointer",
+                boxShadow: "0 0 24px rgba(240,177,42,.25)",
               }}
             >
               CONTINUER
@@ -1323,7 +1837,11 @@ export default function X01Play({
   }
 
   function EndBanner({
-    winnerName, continueAfterFirst, openOverlay, flushPendingFinish, goldBtn,
+    winnerName,
+    continueAfterFirst,
+    openOverlay,
+    flushPendingFinish,
+    goldBtn,
   }: {
     winnerName: string;
     continueAfterFirst: () => void;
@@ -1334,17 +1852,33 @@ export default function X01Play({
     return (
       <div
         style={{
-          position: "fixed", left: "50%", transform: "translateX(-50%)",
+          position: "fixed",
+          left: "50%",
+          transform: "translateX(-50%)",
           bottom: NAV_HEIGHT + Math.round(KEYPAD_HEIGHT * KEYPAD_SCALE) + 80,
-          zIndex: 47, background: "linear-gradient(180deg, #ffc63a, #ffaf00)", color: "#1a1a1a",
-          fontWeight: 900, textAlign: "center", padding: 12, borderRadius: 12,
-          boxShadow: "0 10px 28px rgba(0,0,0,.35)", display: "flex", gap: 12, alignItems: "center",
+          zIndex: 47,
+          background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
+          color: "#1a1a1a",
+          fontWeight: 900,
+          textAlign: "center",
+          padding: 12,
+          borderRadius: 12,
+          boxShadow: "0 10px 28px rgba(0,0,0,.35)",
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
         }}
       >
         <span>Victoire : {winnerName}</span>
-        <button onClick={continueAfterFirst} style={goldBtn}>Continuer (laisser finir)</button>
-        <button onClick={openOverlay} style={goldBtn}>Classement</button>
-        <button onClick={flushPendingFinish} style={goldBtn}>Terminer</button>
+        <button onClick={continueAfterFirst} style={goldBtn}>
+          Continuer (laisser finir)
+        </button>
+        <button onClick={openOverlay} style={goldBtn}>
+          Classement
+        </button>
+        <button onClick={flushPendingFinish} style={goldBtn}>
+          Terminer
+        </button>
       </div>
     );
   }

@@ -2,7 +2,7 @@
 // src/lib/stats.ts — Socle de statistiques
 // - Exports robustes et stables pour éviter les crashs
 // - Stats basiques par profil à partir de l'historique
-// - Stubs safe pour computeLegStats / aggregateMatch (compat X01Play)
+// - computeLegStats/aggregateMatch compatibles avec X01Play + playerStats
 // ============================================
 
 /* ---------- Types publics ---------- */
@@ -27,16 +27,34 @@ export type Visit = {
   bust: boolean;
   isCheckout: boolean;
   dartsUsed?: number;     // 1..3 quand checkout, sinon 3
-  remainingAfter: number;
+  remainingAfter: number; // reste APRÈS la volée
 };
 
 export type LegInput = {
   startScore: number;
   players: string[];     // ids des joueurs
-  visits: Visit[];       // journal des volées triées par visitNo
+  visits: Visit[];       // journal des volées triées par visitNo (global)
   finishedAt: number;
   legNo: number;
   winnerId: string | null;
+};
+
+export type PerPlayerLegStats = {
+  darts: number;
+  points: number;
+  visits: number;
+  avg3d: number;
+  bestVisit: number;
+  h60: number;
+  h100: number;
+  h140: number;
+  h180: number;
+
+  // Nouveaux champs/alias pour compat
+  avg3: number;                 // alias de avg3d
+  dartsThrown: number;          // alias de darts
+  bestCheckout?: number;        // plus haut checkout (reste au début de la volée qui termine)
+  buckets?: Record<string, number>; // "0-59","60-99","100+","140+","180"
 };
 
 export type LegStats = {
@@ -44,23 +62,12 @@ export type LegStats = {
   players: string[];
   winnerId: string | null;
   finishedAt: number;
-
-  perPlayer: Record<string, {
-    darts: number;
-    points: number;
-    visits: number;
-    avg3d: number;
-    bestVisit: number;
-    h60: number;
-    h100: number;
-    h140: number;
-    h180: number;
-  }>;
+  perPlayer: Record<string, PerPlayerLegStats>;
 };
 
 /* ---------- Helpers locaux ---------- */
 function now() { return Date.now(); }
-function safeNumber(n: any, d = 0) { return Number.isFinite(n) ? Number(n) : d; }
+function safeNumber(n: any, d = 0) { const v = Number(n); return Number.isFinite(v) ? v : d; }
 
 /* ---------- Accès HISTORIQUE (tolérant) ---------- */
 type AnyRecord = any;
@@ -71,35 +78,25 @@ async function loadAllHistory(): Promise<AnyRecord[]> {
   try {
     // @ts-ignore
     const { History } = await import("./history");
-    const cands: any[] = [];
 
-    // tentatives sync
-    if (Array.isArray(History?.list)) cands.push(History.list);
-    if (Array.isArray(History?.all)) cands.push(History.all);
     if (typeof History?.list === "function") {
       const r = History.list();
-      if (Array.isArray(r)) return r;
-      if (r && typeof r.then === "function") return await r;
+      return Array.isArray(r) ? r : await r;
     }
     if (typeof History?.all === "function") {
       const r = History.all();
-      if (Array.isArray(r)) return r;
-      if (r && typeof r.then === "function") return await r;
+      return Array.isArray(r) ? r : await r;
     }
     if (typeof History?.getAll === "function") {
       const r = History.getAll();
-      if (Array.isArray(r)) return r;
-      if (r && typeof r.then === "function") return await r;
+      return Array.isArray(r) ? r : await r;
     }
     if (typeof History?.entries === "function") {
       const r = History.entries();
-      if (Array.isArray(r)) return r;
-      if (r && typeof r.then === "function") return await r;
+      return Array.isArray(r) ? r : await r;
     }
 
-    // fallback : clé IndexedDB/LS si ton History la publie
     if (Array.isArray((History as any)?._cache)) return (History as any)._cache;
-
     return [];
   } catch {
     return [];
@@ -133,7 +130,6 @@ export async function getBasicProfileStats(profileId: string): Promise<BasicProf
         r?.payload?.status === "finished" ||
         (r?.winnerId ?? r?.payload?.winnerId);
 
-      // Heuristique "une entrée = une partie" si c'est un match
       if (finished && (kind === "x01" || kind === "cricket" || kind === "match" || r?.winnerId)) {
         games += 1;
         if ((r?.winnerId ?? r?.payload?.winnerId) === profileId) wins += 1;
@@ -185,7 +181,7 @@ export async function getBasicProfileStats(profileId: string): Promise<BasicProf
     }
   }
 
-  const avg3d = totalDarts > 0 ? +( (totalPoints / totalDarts) * 3 ).toFixed(2) : 0;
+  const avg3d = totalDarts > 0 ? +(((totalPoints / totalDarts) * 3).toFixed(2)) : 0;
 
   return {
     games, legs, wins,
@@ -204,33 +200,74 @@ export async function getBasicStatsForProfiles(ids: string[]) {
 
 /* =================================================
    Compat X01Play : computeLegStats / aggregateMatch
-   (stubs sûrs qui donnent déjà des chiffres corrects)
    ================================================= */
 export function computeLegStats(input: LegInput): LegStats {
-  const perPlayer: LegStats["perPlayer"] = {};
+  const perPlayer: Record<string, PerPlayerLegStats> = {};
   const byPlayer: Record<string, Visit[]> = {};
-  for (const v of input.visits) {
-    (byPlayer[v.playerId] ||= []).push(v);
-  }
+  for (const v of input.visits) (byPlayer[v.playerId] ||= []).push(v);
+
   for (const pid of input.players) {
     const arr = (byPlayer[pid] || []).sort((a,b)=>a.visitNo-b.visitNo);
+
     let darts = 0, points = 0, visits = 0, bestVisit = 0;
     let h60 = 0, h100 = 0, h140 = 0, h180 = 0;
+    let bestCheckout = 0;
+
+    // Pour calculer le checkout : on garde le "reste avant volée"
+    let prevRemaining = input.startScore;
 
     for (const v of arr) {
       visits += 1;
       const used = v.dartsUsed ?? 3;
       darts += used;
       points += v.score;
+
       if (v.score > bestVisit) bestVisit = v.score;
       if (v.score >= 60) h60 += 1;
       if (v.score >= 100) h100 += 1;
       if (v.score >= 140) h140 += 1;
       if (v.score === 180) h180 += 1;
+
+      // Si la volée termine (isCheckout), le "checkout" est le reste AVANT la volée
+      if (v.isCheckout) bestCheckout = Math.max(bestCheckout, prevRemaining);
+
+      // maj du "reste avant volée" pour la prochaine
+      prevRemaining = v.remainingAfter;
     }
-    const avg3d = darts > 0 ? +( (points / darts) * 3 ).toFixed(2) : 0;
-    perPlayer[pid] = { darts, points, visits, avg3d, bestVisit, h60, h100, h140, h180 };
+
+    const avg3d = darts > 0 ? +(((points / darts) * 3).toFixed(2)) : 0;
+
+    // Buckets pour histogramme (par visites)
+    const buckets: Record<string, number> = {};
+    const sixtyTo99 = Math.max(0, h60 - h100);            // >=60 mais <100
+    const hundredPlus = Math.max(0, h100 - h140 - h180);  // >=100 mais <140 (hors 140+ et 180)
+    const oneFortyPlus = h140;                            // 140+
+    const oneEighty = h180;                               // 180
+    const known = sixtyTo99 + hundredPlus + oneFortyPlus + oneEighty;
+    const zeroTo59 = Math.max(0, visits - known);
+
+    buckets["0-59"]  = zeroTo59;
+    buckets["60-99"] = sixtyTo99;
+    buckets["100+"]  = hundredPlus;
+    buckets["140+"]  = oneFortyPlus;
+    buckets["180"]   = oneEighty;
+
+    perPlayer[pid] = {
+      darts,
+      points,
+      visits,
+      avg3d,
+      bestVisit,
+      h60, h100, h140, h180,
+
+      // alias/compléments attendus ailleurs
+      avg3: avg3d,
+      dartsThrown: darts,
+      bestCheckout: bestCheckout || undefined,
+      buckets,
+    };
   }
+
   return {
     legNo: input.legNo,
     players: input.players,
@@ -244,9 +281,14 @@ export function aggregateMatch(legs: LegStats[], players: string[]) {
   const agg: any = { perPlayer: {}, legs: legs.length };
   for (const pid of players) {
     agg.perPlayer[pid] = {
-      darts: 0, points: 0, visits: 0, bestVisit: 0, h60: 0, h100: 0, h140: 0, h180: 0, avg3d: 0,
+      darts: 0, points: 0, visits: 0,
+      bestVisit: 0, bestCheckout: 0,
+      h60: 0, h100: 0, h140: 0, h180: 0,
+      avg3d: 0, avg3: 0, dartsThrown: 0,
+      buckets: {} as Record<string, number>,
     };
   }
+
   for (const L of legs) {
     for (const pid of players) {
       const s = L.perPlayer[pid];
@@ -256,12 +298,23 @@ export function aggregateMatch(legs: LegStats[], players: string[]) {
       t.points += s.points;
       t.visits += s.visits;
       t.bestVisit = Math.max(t.bestVisit, s.bestVisit);
+      t.bestCheckout = Math.max(t.bestCheckout || 0, s.bestCheckout || 0);
       t.h60 += s.h60; t.h100 += s.h100; t.h140 += s.h140; t.h180 += s.h180;
+
+      // buckets merge
+      if (s.buckets) {
+        for (const k of Object.keys(s.buckets)) {
+          t.buckets[k] = (t.buckets[k] || 0) + safeNumber(s.buckets[k]);
+        }
+      }
     }
   }
+
   for (const pid of players) {
     const t = agg.perPlayer[pid];
-    t.avg3d = t.darts > 0 ? +( (t.points / t.darts) * 3 ).toFixed(2) : 0;
+    t.avg3d = t.darts > 0 ? +(((t.points / t.darts) * 3).toFixed(2)) : 0;
+    t.avg3 = t.avg3d;
+    t.dartsThrown = t.darts;
   }
   return agg;
 }
