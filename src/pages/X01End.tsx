@@ -1,9 +1,15 @@
 // ============================================
-// src/pages/X01End.tsx — Fin de partie “maxi-stats” (LEG/MATCH) — compact + DBull + fallbacks
+// src/pages/X01End.tsx
+// Fin de partie “maxi-stats” (LEG/MATCH) — version colonnes = joueurs
+// + DBull, % corrects, fallbacks robustes
+// + Cible circulaire (polar) par numéros 1..20 + Bull/DBull/Miss
 // ============================================
 import React from "react";
 import { History } from "../lib/history";
 
+/* ================================
+   Types basiques
+================================ */
 type PlayerLite = { id: string; name?: string; avatarDataUrl?: string | null };
 
 type Props = {
@@ -11,21 +17,32 @@ type Props = {
   params?: { matchId?: string; resumeId?: string | null; rec?: any; showEnd?: boolean };
 };
 
-/* ====== DENSITÉ / RESPONSIVE ====== */
-const D = { fsBody: 12, fsHead: 12, padCellV: 5, padCellH: 8, cardPad: 10, radius: 14 };
+/* ================================
+   Densité / responsive
+================================ */
+const D = { fsBody: 12, fsHead: 12, padCellV: 6, padCellH: 10, cardPad: 10, radius: 14 };
 const mobileDenseCss = `
 @media (max-width: 420px){
   .x-end h2{ font-size:16px; }
   .x-card h3{ font-size:13px; }
   .x-table{ font-size:11px; }
   .x-th, .x-td{ padding:4px 6px; }
+  .selector button{ font-size:11px; padding:4px 8px; }
 }
 `;
 
+/* ================================
+   Composant principal
+================================ */
 export default function X01End({ go, params }: Props) {
+  // --- Hooks toujours au même ordre ---
   const [rec, setRec] = React.useState<any | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
 
+  // cible: ne pas dépendre de rec au moment de l'initialisation
+  const [chartPid, setChartPid] = React.useState<string>("");
+
+  // chargement de l'enregistrement (ne change pas l'ordre des hooks)
   React.useEffect(() => {
     let mounted = true;
     (async () => {
@@ -53,35 +70,61 @@ export default function X01End({ go, params }: Props) {
     return () => { mounted = false; };
   }, [params?.matchId, params?.rec]);
 
-  if (err) return <Shell go={go} title="Fin de partie"><Notice>{err}</Notice></Shell>;
-  if (!rec)  return <Shell go={go}><Notice>Chargement…</Notice></Shell>;
-
-  const finished = normalizeStatus(rec) === "finished";
-  const when = n(rec.updatedAt ?? rec.createdAt ?? Date.now());
+  // données dérivées — protégées quand rec est null
+  const finished = normalizeStatus(rec ?? {}) === "finished";
+  const when = n(rec?.updatedAt ?? rec?.createdAt ?? Date.now());
   const dateStr = new Date(when).toLocaleString();
 
-  const players: PlayerLite[] = rec.players?.length ? rec.players : (rec.payload?.players || []);
+  const players: PlayerLite[] = React.useMemo(() => {
+    if (!rec) return []; // important: tableau vide tant que non chargé
+    return rec.players?.length ? rec.players : (rec.payload?.players || []);
+  }, [rec]);
+
   const winnerId: string | null =
-    rec.winnerId ?? rec.payload?.winnerId ?? rec.summary?.winnerId ?? null;
+    rec?.winnerId ?? rec?.payload?.winnerId ?? rec?.summary?.winnerId ?? null;
   const winnerName =
     (winnerId && (players.find(p => p.id === winnerId)?.name || null)) || null;
 
-  const matchSummary = rec.summary && rec.summary.kind === "x01" ? rec.summary : null;
+  const matchSummary = rec?.summary && rec?.summary.kind === "x01" ? rec.summary : null;
   const legSummary   = !matchSummary ? buildSummaryFromLeg(rec) : null;
 
-  const M = buildPerPlayerMetrics(rec, matchSummary || legSummary, players);
+  const M = React.useMemo(() => {
+    return rec ? buildPerPlayerMetrics(rec, matchSummary || legSummary, players) : {};
+  }, [rec, matchSummary, legSummary, players]);
+
   const has = detectAvailability(M);
 
   const title =
-    ((rec?.kind === "x01" || rec?.kind === "leg") ? "LEG" : String(rec?.kind || "Fin").toUpperCase())
-    + " — " + dateStr;
+    (((rec?.kind === "x01" || rec?.kind === "leg") ? "LEG" : String(rec?.kind || "Fin").toUpperCase())
+     + " — " + dateStr);
 
   const resumeId = params?.resumeId ?? rec?.resumeId ?? rec?.payload?.resumeId ?? null;
-  const canResume = !finished && !!resumeId;
+  const canResume = !!resumeId && !finished;
+
+  // garder chartPid cohérent avec la liste des joueurs dès qu'elle change
+  React.useEffect(() => {
+    if (!players.length) return;
+    setChartPid(prev => (players.find(p => p.id === prev) ? prev : (players[0]?.id || "")));
+  }, [players]);
+
+  // --- Rendus (aucun hook après ceci) ---
+  if (err) return <Shell go={go} title="Fin de partie"><Notice>{err}</Notice></Shell>;
+  if (!rec)  return <Shell go={go}><Notice>Chargement…</Notice></Shell>;
+
+  const chartPlayer = players.find(p => p.id === chartPid);
+  const chartMetrics = chartPlayer ? (M[chartPlayer.id] || emptyMetrics(chartPlayer)) : null;
+  
+  /* ========= Tableaux COL-MAJOR (colonnes = joueurs) ========= */
+  const cols = players.map(p => ({ key: p.id, title: p.name || "—" }));
+
+  const tableStyle: React.CSSProperties = {
+    width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:D.fsBody
+  };
 
   return (
     <Shell go={go} title={title} canResume={canResume} resumeId={resumeId}>
       <style dangerouslySetInnerHTML={{__html: mobileDenseCss}} />
+
       <Panel>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ fontWeight: 800, color: "#e8e8ec", fontSize: 12 }}>
@@ -99,121 +142,173 @@ export default function X01End({ go, params }: Props) {
         <InfoCard><b>Résumé (manche)</b> — reconstruit depuis les statistiques de la manche.</InfoCard>
       ) : null}
 
-      {/* 1) VOLUMES */}
-      <TableCard title="Volumes">
-        <Table
-          headers={[
-            "Joueur","Avg/3D","Avg/1D","Best visit","Best CO","Darts","Visits","Pts","Pts/Vi",
-            ...(has.first9 ? ["First9"] : []),
-            ...(has.dartsToFinish ? ["Darts→CO"] : []),
-            ...(has.highestNonCO ? ["Hi non-CO"] : []),
+      {/* ===== 1) VOLUMES (lignes) ===== */}
+      <CardTable title="Volumes">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            {
+              rows: [
+                { label:"Avg/3D",  get:(m)=>f2(m.avg3) },
+                { label:"Avg/1D",  get:(m)=>f2(m.avg1) },
+                { label:"Best visit", get:(m)=>f0(m.bestVisit) },
+                { label:"Best CO", get:(m)=>f0(m.bestCO) },
+                { label:"Darts",   get:(m)=>f0(m.darts) },
+                { label:"Visits",  get:(m)=>f0(m.visits) },
+                { label:"Points",  get:(m)=>f0(m.points) },
+                { label:"Score/visit", get:(m)=> m.visits>0 ? f2(m.points/m.visits) : "—" },
+                ...(has.first9        ? [{ label:"First9", get:(m)=> m.first9!=null?f2(m.first9):"—"}] : []),
+                ...(has.dartsToFinish ? [{ label:"Darts→CO", get:(m)=> m.dartsToFinish!=null?f0(m.dartsToFinish):"—"}] : []),
+                ...(has.highestNonCO  ? [{ label:"Hi non-CO", get:(m)=> m.highestNonCO!=null?f0(m.highestNonCO):"—"}] : []),
+              ]
+            }
           ]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            return [
-              nameCell(m),
-              f2(m.avg3), f2(m.avg1), f0(m.bestVisit), f0(m.bestCO),
-              f0(m.darts), f0(m.visits), f0(m.points),
-              m.visits > 0 ? f2(m.points / m.visits) : "—",
-              ...(has.first9        ? [m.first9        != null ? f2(m.first9)        : "—"] : []),
-              ...(has.dartsToFinish ? [m.dartsToFinish != null ? f0(m.dartsToFinish) : "—"] : []),
-              ...(has.highestNonCO  ? [m.highestNonCO  != null ? f0(m.highestNonCO)  : "—"] : []),
-            ];
-          })}
+          dataMap={M}
+          tableStyle={tableStyle}
         />
-      </TableCard>
+      </CardTable>
 
-      {/* 2) POWER SCORING */}
-      <TableCard title="Power scoring">
-        <Table
-          headers={["Joueur","180","140+","100+","60+","Tons (Σ)"]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            const tonsTotal = m.t180 + m.t140 + m.t100;
-            return [nameCell(m), f0(m.t180), f0(m.t140), f0(m.t100), f0(m.t60), f0(tonsTotal)];
-          })}
-        />
-      </TableCard>
-
-      {/* 3) CHECKOUT */}
-      <TableCard title="Checkout">
-        <Table
-          headers={[
-            "Joueur","Best CO","CO hits","CO att.","CO %",
-            ...(has.avgCoDarts ? ["Avg darts@CO"] : []),
+      {/* ===== 2) POWER SCORING (ordre 60,100,140+,180) ===== */}
+      <CardTable title="Power scoring">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            { rows: [
+              { label:"60+",  get:(m)=>f0(m.t60)  },
+              { label:"100+", get:(m)=>f0(m.t100) },
+              { label:"140+", get:(m)=>f0(m.t140) },
+              { label:"180",  get:(m)=>f0(m.t180) },
+              { label:"Tons (Σ)", get:(m)=>f0(m.t180 + m.t140 + m.t100) },
+            ]},
           ]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            return [
-              nameCell(m),
-              f0(m.bestCO), f0(m.coHits), f0(m.coAtt), pct(m.coPct),
-              ...(has.avgCoDarts ? [m.avgCoDarts != null ? f2(m.avgCoDarts) : "—"] : []),
-            ];
-          })}
+          dataMap={M}
+          tableStyle={tableStyle}
         />
-      </TableCard>
+      </CardTable>
 
-      {/* 4) DARTS USAGE */}
-      <TableCard title="Darts usage">
-        <Table
-          headers={["Joueur","Darts","Singles","Singles %","Miss","Miss %","Bust","Bust %"]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            const d = Math.max(0, m.darts || 0);
-            // singles fallback (reconstruction)
-            const singles = n(m.singles, Math.max(0, d - (n(m.doubles)+n(m.triples)+n(m.bulls)+n(m.dbulls)+n(m.misses)+n(m.busts))));
-            const misses  = n(m.misses, 0);
-            const busts   = n(m.busts, 0);
-            const sp = d>0 ? (singles/d*100) : undefined;
-            const mp = d>0 ? (misses /d*100) : undefined;
-            const bp = d>0 ? (busts  /d*100) : undefined;
-            return [nameCell(m), f0(d), f0(singles), pct(sp), f0(misses), pct(mp), f0(busts), pct(bp)];
-          })}
-        />
-      </TableCard>
-
-      {/* 5) IMPACTS */}
-      <TableCard title="Précision (impacts)">
-        <Table
-          headers={[
-            "Joueur",
-            "Doubles","Dbl %",
-            "Triples","Trpl %",
-            "Bulls","Bulls %",
-            "DBull","DBull %",
-            ...(has.singles ? ["Singles"] : []),
-            ...(has.misses  ? ["Misses"]  : []),
+      {/* ===== 3) CHECKOUT ===== */}
+      <CardTable title="Checkout">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            { rows: [
+              { label:"Best CO", get:(m)=>f0(m.bestCO) },
+              { label:"CO hits", get:(m)=>f0(m.coHits) },
+              { label:"CO att.", get:(m)=>f0(m.coAtt) },
+              { label:"CO %",    get:(m)=>pct(m.coPct) },
+              ...(has.avgCoDarts ? [{ label:"Avg darts@CO", get:(m)=> m.avgCoDarts!=null?f2(m.avgCoDarts):"—" }] : []),
+            ]},
           ]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            return [
-              nameCell(m),
-              f0(m.doubles), pct(m.doublePct),
-              f0(m.triples), pct(m.triplePct),
-              f0(m.bulls),   pct(m.bullPct),
-              f0(m.dbulls),  pct(m.dbullPct),
-              ...(has.singles ? [f0(m.singles || 0)] : []),
-              ...(has.misses  ? [f0(m.misses  || 0)] : []),
-            ];
-          })}
+          dataMap={M}
+          tableStyle={tableStyle}
         />
-      </TableCard>
+      </CardTable>
 
-      {/* 6) RATES (si tentatives connues ou fallback) */}
-      <TableCard title="Rates (si tentatives connues ou fallback)">
-        <Table
-          headers={["Joueur","Treble rate","Double rate","Bull rate","DBull rate","Checkout rate","Single rate","Bust rate"]}
-          rows={players.map(p => {
-            const m = M[p.id] || emptyMetrics(p);
-            return [nameCell(m), pct(m.triplePct), pct(m.doublePct), pct(m.bullPct), pct(m.dbullPct), pct(m.coPct), pct(m.singleRate), pct(m.bustRate)];
-          })}
+      {/* ===== 4) DARTS USAGE ===== */}
+      <CardTable title="Darts usage">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            { rows: [
+              { label:"Darts",   get:(m)=>f0(m.darts) },
+              { label:"Singles", get:(m)=> {
+                  const d = Math.max(0, m.darts||0);
+                  const singles = n(m.singles, Math.max(0, d - (n(m.doubles)+n(m.triples)+n(m.bulls)+n(m.dbulls)+n(m.misses)+n(m.busts))));
+                  return f0(singles);
+                } },
+              { label:"Singles %", get:(m)=>{
+                  const d = Math.max(0, m.darts||0);
+                  const singles = n(m.singles, Math.max(0, d - (n(m.doubles)+n(m.triples)+n(m.bulls)+n(m.dbulls)+n(m.misses)+n(m.busts))));
+                  return pct(d>0 ? (singles/d*100) : undefined);
+                }},
+              { label:"Miss",     get:(m)=>f0(m.misses||0) },
+              { label:"Miss %",   get:(m)=>pct( (m.darts>0) ? (n(m.misses)/m.darts*100) : undefined ) },
+              { label:"Bust",     get:(m)=>f0(m.busts||0) },
+              { label:"Bust %",   get:(m)=>pct( (m.darts>0) ? (n(m.busts)/m.darts*100) : undefined ) },
+            ]},
+          ]}
+          dataMap={M}
+          tableStyle={tableStyle}
         />
-      </TableCard>
+      </CardTable>
+
+      {/* ===== 5) PRÉCISION (IMPACTS) ===== */}
+      <CardTable title="Précision (impacts)">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            { rows: [
+              { label:"Doubles",  get:(m)=>f0(m.doubles) },
+              { label:"Dbl %",    get:(m)=>pct(m.doublePct) },
+              { label:"Triples",  get:(m)=>f0(m.triples) },
+              { label:"Trpl %",   get:(m)=>pct(m.triplePct) },
+              { label:"Bulls",    get:(m)=>f0(m.bulls) },
+              { label:"Bulls %",  get:(m)=>pct(m.bullPct) },
+              { label:"DBull",    get:(m)=>f0(m.dbulls) },
+              { label:"DBull %",  get:(m)=>pct(m.dbullPct) },
+              ...(has.singles ? [{ label:"Singles (hits)", get:(m)=>f0(m.singles||0) }] : []),
+              ...(has.misses  ? [{ label:"Misses (hits)",  get:(m)=>f0(m.misses ||0) }] : []),
+            ]},
+          ]}
+          dataMap={M}
+          tableStyle={tableStyle}
+        />
+      </CardTable>
+
+      {/* ===== 6) RATES ===== */}
+      <CardTable title="Rates (si tentatives connues ou fallback)">
+        <TableColMajor
+          columns={cols}
+          rowGroups={[
+            { rows: [
+              { label:"Treble rate",  get:(m)=>pct(m.triplePct) },
+              { label:"Double rate",  get:(m)=>pct(m.doublePct) },
+              { label:"Bull rate",    get:(m)=>pct(m.bullPct) },
+              { label:"DBull rate",   get:(m)=>pct(m.dbullPct) },
+              { label:"Checkout rate",get:(m)=>pct(m.coPct) },
+              { label:"Single rate",  get:(m)=>pct(m.singleRate) },
+              { label:"Bust rate",    get:(m)=>pct(m.bustRate) },
+            ]},
+          ]}
+          dataMap={M}
+          tableStyle={tableStyle}
+        />
+      </CardTable>
+
+      {/* ===== 7) CIBLE CIRCULAIRE POLAIRE ===== */}
+      {chartMetrics ? (
+        <Panel className="x-card">
+          <h3 style={{ margin:"0 0 6px", fontSize:D.fsHead+1, letterSpacing:0.2, color:"#ffcf57" }}>
+            Graphique cible circulaire
+          </h3>
+          <div className="selector" style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+            {players.map(p => (
+              <button key={p.id}
+                onClick={()=>setChartPid(p.id)}
+                style={{
+                  padding:"6px 10px", borderRadius:999,
+                  border: p.id===chartPid ? "1px solid rgba(255,200,60,.6)" : "1px solid rgba(255,255,255,.18)",
+                  background: p.id===chartPid ? "linear-gradient(180deg,#ffc63a,#ffaf00)" : "transparent",
+                  color: p.id===chartPid ? "#141417" : "#e8e8ec", fontWeight:800, cursor:"pointer"
+                }}>
+                {p.name || "—"}
+              </button>
+            ))}
+          </div>
+          <TargetPolar m={chartMetrics} />
+          <div style={{ marginTop:8, color:"#bbb", fontSize:12 }}>
+            Chaque point = total de hits sur le numéro (échelle normalisée, bord = valeur max).  
+            Les points sont reliés pour former la “forme” de la manche. Inclut Miss, Bull, DBull.
+          </div>
+        </Panel>
+      ) : null}
     </Shell>
   );
 }
 
-/* ===== Fallback LEG -> summary-like ===== */
+/* ================================
+   Fallback LEG -> summary-like
+================================ */
 function buildSummaryFromLeg(rec: any) {
   const leg = rec?.payload?.__legStats || rec?.__legStats;
   const per  = leg?.perPlayer;
@@ -266,7 +361,11 @@ function buildSummaryFromLeg(rec: any) {
   return null;
 }
 
-/* ===== Metrics ===== */
+/* ================================
+   Metrics & extraction robuste
+================================ */
+type ByNumber = Record<string, { inner?: number; outer?: number; double?: number; triple?: number; miss?: number; bull?: number; dbull?: number }>;
+
 type PlayerMetrics = {
   id: string; name: string;
   darts: number; visits: number; points: number; avg1: number; avg3: number;
@@ -279,6 +378,7 @@ type PlayerMetrics = {
   singleRate?: number; bustRate?: number;
   coHits: number; coAtt: number; coPct: number;
   segOuter?: number; segInner?: number; segDouble?: number; segTriple?: number; segMiss?: number;
+  byNumber?: ByNumber; // NEW: pour la cible polaire
 };
 
 function emptyMetrics(p: { id: string; name?: string }): PlayerMetrics {
@@ -293,6 +393,7 @@ function emptyMetrics(p: { id: string; name?: string }): PlayerMetrics {
     singleRate: undefined, bustRate: undefined,
     coHits: 0, coAtt: 0, coPct: 0,
     segOuter: undefined, segInner: undefined, segDouble: undefined, segTriple: undefined, segMiss: undefined,
+    byNumber: undefined,
   };
 }
 
@@ -306,7 +407,7 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
     const pid = pl.id;
     const m = emptyMetrics(pl);
 
-    // summary
+    // ===== 1) summary (rapide)
     const s = summary?.players?.[pid];
     if (s) {
       m.avg3 = n(s.avg3); m.avg1 = m.avg3 / 3;
@@ -319,7 +420,7 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
       m.t180 = n(b["180"]); m.t140 = n(b["140+"]); m.t100 = n(b["100+"]); m.t60 = n(b["60+"]);
     }
 
-    // rich perPlayer / impacts / segments
+    // ===== 2) perPlayer riche
     const r = per?.[pid] || {};
     const imp = r.impacts || {};
     m.first9        = v(r.first9Avg);
@@ -327,60 +428,28 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
     m.dartsToFinish = v(r.dartsToFinish);
     m.avgCoDarts    = v(r.avgCheckoutDarts);
 
-    // bruts
+    // bruts (hits)
     m.doubles = n(r.doubles, n(imp.doubles, m.doubles));
     m.triples = n(r.triples, n(imp.triples, m.triples));
     m.bulls   = n(r.bulls,   n(imp.bulls,   m.bulls));
-    m.dbulls  = n(r.dbulls,  n(imp.dbulls,  m.dbulls)); // NEW
+    m.dbulls  = n(r.dbulls,  n(imp.dbulls,  m.dbulls));
     m.singles = (r.singles ?? imp.singles ?? m.singles) as any;
     m.misses  = (r.misses  ?? imp.misses  ?? m.misses ) as any;
     m.busts   = (r.busts   ?? imp.busts   ?? m.busts  ) as any;
 
-    // attempts + hits (pour % “vrais” si présents)
-    const dblAtt = n(r.doubleAttempts ?? imp.doubleAttempts, 0);
-    const trpAtt = n(r.tripleAttempts ?? imp.tripleAttempts, 0);
-    const bulAtt = n(r.bullAttempts   ?? imp.bullAttempts,   0);
-    const dbuAtt = n(r.dbullAttempts  ?? imp.dbullAttempts  ?? r.doubleBullAttempts ?? imp.doubleBullAttempts, 0);
-
-    const dblHit = n(r.doubleHits     ?? imp.doubleHits,     0);
-    const trpHit = n(r.tripleHits     ?? imp.tripleHits,     0);
-    const bulHit = n(r.bullHits       ?? imp.bullHits,       0);
-    const dbuHit = n(r.dbullHits      ?? imp.dbullHits      ?? r.doubleBullHits     ?? imp.doubleBullHits, 0);
-
-    if (dblAtt > 0) m.doublePct = (dblHit / dblAtt) * 100;
-    if (trpAtt > 0) m.triplePct = (trpHit / trpAtt) * 100;
-    if (bulAtt > 0) m.bullPct   = (bulHit / bulAtt) * 100;
-    if (dbuAtt > 0) m.dbullPct  = (dbuHit / dbuAtt) * 100;
-
-    // fallback si pas d’attempts: rapportés aux darts jouées
-    if (m.doublePct == null && m.darts) m.doublePct = (n(m.doubles)/m.darts)*100;
-    if (m.triplePct == null && m.darts) m.triplePct = (n(m.triples)/m.darts)*100;
-    if (m.bullPct   == null && m.darts) m.bullPct   = (n(m.bulls)/m.darts)*100;
-    if (m.dbullPct  == null && m.darts) m.dbullPct  = (n(m.dbulls)/m.darts)*100;
-
-    // optional: singles/bust rates (tentatives si dispo sinon fallback darts)
-    const sngAtt = n(r.singleAttempts ?? imp.singleAttempts, 0);
-    const bstAtt = n(r.bustAttempts   ?? imp.bustAttempts,   0);
-    const sngHit = n(r.singleHits     ?? imp.singleHits,     0);
-    const bstHit = n(r.bustHits       ?? imp.bustHits,       0);
-    if (sngAtt > 0) m.singleRate = (sngHit / sngAtt) * 100;
-    if (bstAtt > 0) m.bustRate   = (bstHit / bstAtt) * 100;
-    if (m.singleRate == null && m.darts) m.singleRate = (n(m.singles)/m.darts)*100;
-    if (m.bustRate   == null && m.darts) m.bustRate   = (n(m.busts)/m.darts)*100;
-
     // checkout
     m.coHits = n(r.checkoutHits,     m.coHits);
     m.coAtt  = n(r.checkoutAttempts, m.coAtt);
-    if (m.coAtt > 0) m.coPct = (m.coHits / m.coAtt) * 100;
 
     // volumes complémentaires
     m.visits     = m.visits || n(r.visits, 0);
     m.points     = m.points || n(r.pointsScored, 0);
-    m.avg3       = m.avg3   || n(r.avg3, 0); m.avg1 = m.avg1 || (m.avg3 ? m.avg3/3 : 0);
+    m.avg3       = m.avg3   || n(r.avg3, 0); 
+    m.avg1       = m.avg1   || (m.avg3 ? m.avg3/3 : 0);
     m.bestVisit  = m.bestVisit || n(r.bestVisit, 0);
     m.bestCO     = m.bestCO    || sanitizeCO(r.bestCheckoutScore ?? r.highestCheckout ?? r.bestCheckout);
 
-    // segments
+    // segments (pour la cible) – si fournis
     if (r.segments) {
       m.segOuter  = v(r.segments.outer);
       m.segInner  = v(r.segments.inner);
@@ -389,25 +458,24 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
       m.segMiss   = v(r.segments.miss);
     }
 
-    // legacy power
+    // ===== 3) legacy (compat)
     m.t180 = m.t180 || n(pick(legacy, [`h180.${pid}`, `t180.${pid}`]), 0);
     m.t140 = m.t140 || n(pick(legacy, [`h140.${pid}`, `t140.${pid}`]), 0);
     m.t100 = m.t100 || n(pick(legacy, [`h100.${pid}`, `t100.${pid}`]), 0);
     m.t60  = m.t60  || n(pick(legacy, [`h60.${pid}`,  `t60.${pid}` ]),  0);
 
-    // legacy volumes
     m.darts  = m.darts  || n(pick(legacy, [`darts.${pid}`, `dartsThrown.${pid}`]), 0);
     m.visits = m.visits || n(pick(legacy, [`visits.${pid}`]), 0);
     m.points = m.points || n(pick(legacy, [`pointsScored.${pid}`, `points.${pid}`]), 0);
-    m.avg3   = m.avg3   || n(pick(legacy, [`avg3.${pid}`, `avg3d.${pid}`]), 0); m.avg1 = m.avg1 || (m.avg3 ? m.avg3/3 : 0);
+    m.avg3   = m.avg3   || n(pick(legacy, [`avg3.${pid}`, `avg3d.${pid}`]), 0);
+    if (!m.avg1 && m.avg3) m.avg1 = m.avg3/3;
     m.bestVisit = m.bestVisit || n(pick(legacy, [`bestVisit.${pid}`]), 0);
     m.bestCO    = m.bestCO    || sanitizeCO(pick(legacy, [`bestCheckout.${pid}`, `highestCheckout.${pid}`, `bestCO.${pid}`]));
 
-    // legacy impacts (beaucoup d’alias, y compris DBull / miss / bust)
     const dblC = n(pick(legacy,[`doubles.${pid}`, `doubleCount.${pid}`, `dbl.${pid}`]), 0);
     const trpC = n(pick(legacy,[`triples.${pid}`, `tripleCount.${pid}`, `trp.${pid}`]), 0);
-    const bulC = n(pick(legacy,[`bulls.${pid}`,   `bullCount.${pid}`,   `bull.${pid}`]), 0);          // 25
-    const dbuC = n(pick(legacy,[`dbulls.${pid}`,  `doubleBull.${pid}`,  `doubleBulls.${pid}`, `bull50.${pid}`]), 0); // 50
+    const bulC = n(pick(legacy,[`bulls.${pid}`,   `bullCount.${pid}`,   `bull.${pid}`]), 0);
+    const dbuC = n(pick(legacy,[`dbulls.${pid}`,  `doubleBull.${pid}`,  `doubleBulls.${pid}`, `bull50.${pid}`]), 0);
     const sngC = pick(legacy,[`singles.${pid}`, `single.${pid}`]);
     const misC = pick(legacy,[`misses.${pid}`, `miss.${pid}`]);
     const bstC = pick(legacy,[`busts.${pid}`,  `bust.${pid}`, `bustCount.${pid}`]);
@@ -420,21 +488,71 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
     if (m.misses  == null && misC != null) m.misses  = n(misC, 0);
     if (m.busts   == null && bstC != null) m.busts   = n(bstC, 0);
 
-    // legacy checkout
     m.coHits = m.coHits || n(pick(legacy, [`checkoutHits.${pid}`]), 0);
     m.coAtt  = m.coAtt  || n(pick(legacy, [`checkoutAttempts.${pid}`]), 0);
-    if (m.coPct == null) m.coPct = m.coAtt > 0 ? (m.coHits / m.coAtt) * 100 : 0;
 
-    // dérivés
+    // ===== 4) dérivés & ORDONNANCE : d'abord darts/visits, ensuite %
     if (!m.points && m.avg3 && m.darts) m.points = Math.round((m.avg3/3) * m.darts);
     if (!m.visits && m.darts)           m.visits = Math.ceil(m.darts / 3);
+
+    // si darts encore à 0, tente un fallback minimal (hits connus)
+    if (!m.darts) {
+      const hitsKnown = n(m.singles,0)+n(m.doubles,0)+n(m.triples,0)+n(m.bulls,0)+n(m.dbulls,0)+n(m.misses,0);
+      if (hitsKnown > 0) m.darts = hitsKnown;
+    }
+
+    const darts = Math.max(0, n(m.darts,0));
+
+    // % basés prioritairement sur attempts → sinon fallback hits/darts
+    const dblAtt = n(r.doubleAttempts ?? imp.doubleAttempts, 0);
+    const trpAtt = n(r.tripleAttempts ?? imp.tripleAttempts, 0);
+    const bulAtt = n(r.bullAttempts   ?? imp.bullAttempts,   0);
+    const dbuAtt = n(r.dbullAttempts  ?? imp.dbullAttempts  ?? r.doubleBullAttempts ?? imp.doubleBullAttempts, 0);
+
+    const dblHit = n(r.doubleHits     ?? imp.doubleHits,     m.doubles);
+    const trpHit = n(r.tripleHits     ?? imp.tripleHits,     m.triples);
+    const bulHit = n(r.bullHits       ?? imp.bullHits,       m.bulls);
+    const dbuHit = n(r.dbullHits      ?? imp.dbullHits      ?? r.doubleBullHits     ?? imp.doubleBullHits, m.dbulls);
+
+    m.doublePct = (dblAtt > 0) ? (dblHit / dblAtt) * 100 : (darts ? (n(m.doubles)/darts)*100 : undefined);
+    m.triplePct = (trpAtt > 0) ? (trpHit / trpAtt) * 100 : (darts ? (n(m.triples)/darts)*100 : undefined);
+    m.bullPct   = (bulAtt > 0) ? (bulHit / bulAtt) * 100 : (darts ? (n(m.bulls)/darts)*100   : undefined);
+    m.dbullPct  = (dbuAtt > 0) ? (dbuHit / dbuAtt) * 100 : (darts ? (n(m.dbulls)/darts)*100  : undefined);
+
+    // singles/busts (attempts → fallback)
+    const sngAtt = n(r.singleAttempts ?? imp.singleAttempts, 0);
+    const bstAtt = n(r.bustAttempts   ?? imp.bustAttempts,   0);
+    const sngHit = n(r.singleHits     ?? imp.singleHits,     n(m.singles,0));
+    const bstHit = n(r.bustHits       ?? imp.bustHits,       n(m.busts,0));
+    m.singleRate = (sngAtt > 0) ? (sngHit / sngAtt) * 100 : (darts ? (n(m.singles)/darts)*100 : undefined);
+    m.bustRate   = (bstAtt > 0) ? (bstHit / bstAtt) * 100 : (darts ? (n(m.busts)/darts)*100   : undefined);
+
+    // CO%
+    if (m.coAtt > 0) m.coPct = (m.coHits / m.coAtt) * 100;
+
+    // ===== 5) données de cible (si segments manquent → fallback)
+    // singles = tout ce qui n'est ni D/T/Bull/DBull/Miss (les busts ne sont pas des impacts)
+    const singlesFallback = Math.max(0, darts - (n(m.doubles)+n(m.triples)+n(m.bulls)+n(m.dbulls)+n(m.misses)));
+    if (m.singles == null) m.singles = singlesFallback;
+
+    if (m.segOuter == null || m.segInner == null) {
+      const sng = n(m.singles, 0);
+      // split 55/45 si pas de détail outer/inner
+      m.segOuter = n(m.segOuter, Math.round(sng*0.55));
+      m.segInner = n(m.segInner, sng - n(m.segOuter,0));
+    }
+    if (m.segDouble == null) m.segDouble = n(m.doubles, 0);
+    if (m.segTriple == null) m.segTriple = n(m.triples, 0);
+    if (m.segMiss   == null) m.segMiss   = n(m.misses,  0);
 
     out[pid] = m;
   }
   return out;
 }
 
-/* ===== Détection colonnes optionnelles ===== */
+/* ================================
+   Détection colonnes optionnelles
+================================ */
 function detectAvailability(M: Record<string, PlayerMetrics>) {
   const vals = Object.values(M);
   const any = (k: keyof PlayerMetrics) =>
@@ -457,49 +575,9 @@ function detectAvailability(M: Record<string, PlayerMetrics>) {
   };
 }
 
-/* ===== UI ===== */
-function TableCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <Panel className="x-card" style={{ padding: D.cardPad }}>
-      <h3 style={{ margin:"0 0 6px", fontSize:D.fsHead+1, letterSpacing:0.2, color:"#ffcf57" }}>{title}</h3>
-      {children}
-    </Panel>
-  );
-}
-function Table({ headers, rows }: { headers:(string|React.ReactNode)[]; rows:(Array<string|number|React.ReactNode>)[]; }) {
-  return (
-    <div className="x-table" style={{ overflowX:"auto", border:"1px solid rgba(255,255,255,.08)", borderRadius:D.radius }}>
-      <table style={{ width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:D.fsBody }}>
-        <thead>
-          <tr>
-            {headers.map((h,i)=>(
-              <th key={i} className="x-th"
-                  style={{ textAlign:i===0?"left":"right", padding:`${D.padCellV}px ${D.padCellH}px`,
-                           color:"#ffcf57", fontWeight:800, background:"rgba(255,255,255,.04)",
-                           position:"sticky", top:0, whiteSpace:"nowrap" }}>
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r,ri)=>(
-            <tr key={ri}>
-              {r.map((c,ci)=>(
-                <td key={ci} className="x-td"
-                    style={{ textAlign:ci===0?"left":"right", padding:`${D.padCellV}px ${D.padCellH}px`,
-                             color:"#e8e8ec", whiteSpace:"nowrap", fontVariantNumeric:"tabular-nums",
-                             borderTop: ri===0 ? "none" : "1px solid rgba(255,255,255,.05)" }}>
-                  {c}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+/* ================================
+   UI de base
+================================ */
 function Shell({ go, title, children, canResume, resumeId }:{
   go:(t:string,p?:any)=>void; title?:string; children?:React.ReactNode; canResume?:boolean; resumeId?:string|null;
 }) {
@@ -528,11 +606,19 @@ function Panel({ children, style, className }:{children:React.ReactNode; style?:
     </div>
   );
 }
-function InfoCard({ children }:{children:React.ReactNode}) {
-  return <Panel style={{ color:"#bbb", padding:D.cardPad }}>{children}</Panel>;
+function CardTable({ title, children }:{ title:string; children:React.ReactNode }) {
+  return (
+    <Panel className="x-card" style={{ padding: D.cardPad }}>
+      <h3 style={{ margin:"0 0 6px", fontSize:D.fsHead+1, letterSpacing:0.2, color:"#ffcf57" }}>{title}</h3>
+      {children}
+    </Panel>
+  );
 }
 function Notice({ children }:{children:React.ReactNode}) {
   return <Panel><div style={{ color:"#bbb" }}>{children}</div></Panel>;
+}
+function InfoCard({ children }:{children:React.ReactNode}) {
+  return <Panel style={{ color:"#bbb" }}>{children}</Panel>;
 }
 function Trophy(props:any){
   return (
@@ -542,7 +628,185 @@ function Trophy(props:any){
   );
 }
 
-/* ===== Utils ===== */
+/* ================================
+   Table COL-MAJOR (lignes = stats)
+================================ */
+type Col = { key: string; title: string };
+type RowDef = { label: string; get: (m: PlayerMetrics) => string | number };
+
+function TableColMajor({
+  columns, rowGroups, dataMap, tableStyle
+}: {
+  columns: Col[];
+  rowGroups: { rows: RowDef[] }[];
+  dataMap: Record<string, PlayerMetrics>;
+  tableStyle?: React.CSSProperties;
+}) {
+  return (
+    <div className="x-table" style={{ overflowX:"auto", border:"1px solid rgba(255,255,255,.08)", borderRadius:D.radius }}>
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th className="x-th" style={thStyle(true)}>Stat</th>
+            {columns.map((c) => (
+              <th key={c.key} className="x-th" style={thStyle(false)}>
+                <span style={{fontWeight:900, color:"#ffcf57"}}>{c.title}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rowGroups.flatMap((g, gi) =>
+            g.rows.map((r, ri) => (
+              <tr key={`r-${gi}-${ri}`}>
+                <td className="x-td" style={tdStyle(true)}>{r.label}</td>
+                {columns.map((c) => {
+                  const m = dataMap[c.key] || emptyMetrics({ id:c.key });
+                  return (
+                    <td key={c.key} className="x-td" style={tdStyle(false)}>
+                      {r.get(m)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function thStyle(isRowHeader:boolean):React.CSSProperties{
+  return {
+    textAlign: isRowHeader?"left":"right",
+    padding:`${D.padCellV}px ${D.padCellH}px`,
+    color:"#ffcf57", fontWeight:800, background:"rgba(255,255,255,.04)", position:"sticky", top:0,
+    whiteSpace:"nowrap"
+  };
+}
+function tdStyle(isRowHeader:boolean):React.CSSProperties{
+  return {
+    textAlign:isRowHeader?"left":"right",
+    padding:`${D.padCellV}px ${D.padCellH}px`,
+    color:"#e8e8ec", whiteSpace:"nowrap", fontVariantNumeric:"tabular-nums",
+    borderTop:"1px solid rgba(255,255,255,.05)"
+  };
+}
+
+/* ================================
+   Cible polaire — 1..20 + bull/dbull/miss
+   Data source: metrics.byNumber (plusieurs alias couverts plus haut)
+================================ */
+function TargetPolar({ m }: { m: PlayerMetrics }) {
+  const size = 340;
+  const cx = size/2, cy = size/2;
+  const Rmax = 140; // rayon utile (bords)
+  const labels = [20,1,18,4,13,6,10,15,2,17,3,19,7,16,8,11,14,9,12,5]; // ordre réel autour de la cible
+
+  // Construire les comptes par numéro à partir de m.byNumber (souplesse sur les clés)
+  const counts: number[] = labels.map(nu => {
+    const k = String(nu);
+    const row = (m.byNumber?.[k] || m.byNumber?.[`n${k}`] || {}) as any;
+    const total =
+      n(row.inner) + n(row.outer) + n(row.double) + n(row.triple) + n(row.bull) + n(row.dbull);
+    return total;
+  });
+  const missCount  = n((m.byNumber as any)?.miss ?? (m.segMiss ?? m.misses));
+  const bullCount  = n((m.byNumber as any)?.bull ?? m.bulls);
+  const dbullCount = n((m.byNumber as any)?.dbull ?? m.dbulls);
+
+  // Échelle — max sur l’ensemble
+  const maxVal = Math.max(1, ...counts, missCount, bullCount + dbullCount);
+  const scale = (v:number)=> (v / maxVal) * Rmax;
+
+  // Points polaires (theta en radians, 0° vers le haut, sens horaire)
+  const toXY = (r:number, thetaDeg:number) => {
+    const a = (thetaDeg - 90) * Math.PI/180; // démarrage en haut
+    return { x: cx + r*Math.cos(a), y: cy + r*Math.sin(a) };
+  };
+
+  // positions des 20 numéros
+  const step = 360/labels.length;
+  const points = counts.map((v, i) => {
+    const r = scale(v);
+    const pos = toXY(r, i*step);
+    return { ...pos, r, i, v };
+  });
+
+  // polyligne (connecte les 20 numéros)
+  const poly = points.map(p => `${p.x},${p.y}`).join(" ");
+
+  // Lignes et labels périphériques
+  const rim = labels.map((nu, i) => {
+    const posTick = toXY(Rmax, i*step);
+    const posLab  = toXY(Rmax+16, i*step);
+    return (
+      <g key={`lab-${nu}`}>
+        <circle cx={posTick.x} cy={posTick.y} r={2} fill="rgba(255,255,255,.35)" />
+        <text x={posLab.x} y={posLab.y}
+          fontSize="11" textAnchor="middle" alignmentBaseline="middle"
+          fill="#e8e8ec" style={{fontWeight:800}}>
+          {nu}
+        </text>
+      </g>
+    );
+  });
+
+  // points visuels sur les numéros
+  const hitDots = points.map((p, idx) => (
+    <g key={`dot-${idx}`}>
+      <circle cx={p.x} cy={p.y} r={3.5} fill="#ffcf57" />
+    </g>
+  ));
+
+  // bull / dbull au centre (rayons distincts)
+  const rb = Math.max(4, scale(bullCount));
+  const rdb = Math.max(2, scale(dbullCount));
+  const missPos = toXY(scale(missCount), 300); // “miss” affiché vers le bas
+
+  return (
+    <div style={{ display:"flex", justifyContent:"center" }}>
+      <svg width="100%" height={size} viewBox={`0 0 ${size} ${size}`} style={{ maxWidth: 480 }}>
+        {/* fond */}
+        <defs>
+          <radialGradient id="bg" cx="50%" cy="40%">
+            <stop offset="0%" stopColor="#2a2a30"/>
+            <stop offset="100%" stopColor="#16161a"/>
+          </radialGradient>
+        </defs>
+        <rect x="0" y="0" width={size} height={size} fill="url(#bg)" rx={16} />
+
+        {/* cercles guides */}
+        {[0.25,0.5,0.75,1].map((t,i)=>(
+          <circle key={i} cx={cx} cy={cy} r={Rmax*t} fill="none" stroke="rgba(255,255,255,.06)" strokeWidth={1}/>
+        ))}
+
+        {/* repères & labels numéros */}
+        {rim}
+
+        {/* polyligne & points */}
+        <polyline points={poly} fill="rgba(255,207,87,.12)" stroke="#ffcf57" strokeWidth={2} />
+        {hitDots}
+
+        {/* Bull / DBull */}
+        <circle cx={cx} cy={cy} r={rb} fill="rgba(255,255,255,.2)" stroke="rgba(255,255,255,.35)" strokeWidth={1}/>
+        <circle cx={cx} cy={cy} r={rdb} fill="#ffcf57" />
+        <text x={cx} y={cy-8} textAnchor="middle" fontSize="11" fill="#e8e8ec" style={{fontWeight:700}}>Bull {bullCount}</text>
+        <text x={cx} y={cy+10} textAnchor="middle" fontSize="11" fill="#ffcf57" style={{fontWeight:900}}>DBull {dbullCount}</text>
+
+        {/* Miss */}
+        <circle cx={missPos.x} cy={missPos.y} r={3.5} fill="#ffcf57" />
+        <text x={toXY(Rmax+24,300).x} y={toXY(Rmax+24,300).y} textAnchor="middle" fontSize="11" fill="#e8e8ec" style={{fontWeight:800}}>
+          Miss {missCount}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+/* ================================
+   Utils
+================================ */
 function normalizeStatus(rec:any):"finished"|"in_progress"{
   const raw = String(rec?.status ?? rec?.payload?.status ?? "").toLowerCase();
   if (raw === "finished") return "finished";
@@ -552,7 +816,6 @@ function normalizeStatus(rec:any):"finished"|"in_progress"{
   return "in_progress";
 }
 function sanitizeCO(v:any):number{ const num = Number(v); if(!Number.isFinite(num)) return 0; const r = Math.round(num); if (r===50) return 50; if (r>=2 && r<=170) return r; return 0; }
-function nameCell(m:PlayerMetrics){ return <span style={{fontWeight:800,color:"#ffcf57"}}>{m.name}</span>; }
 function btn():React.CSSProperties{ return { borderRadius:10, padding:"6px 10px", border:"1px solid rgba(255,255,255,.12)", background:"transparent", color:"#e8e8ec", fontWeight:700, cursor:"pointer", fontSize:12 }; }
 function btnGold():React.CSSProperties{ return { borderRadius:10, padding:"6px 10px", border:"1px solid rgba(255,180,0,.3)", background:"linear-gradient(180deg,#ffc63a,#ffaf00)", color:"#141417", fontWeight:900, boxShadow:"0 10px 22px rgba(255,170,0,.28)", fontSize:12 }; }
 function n(x:any,d=0){ const v=Number(x); return Number.isFinite(v)?v:d; }
