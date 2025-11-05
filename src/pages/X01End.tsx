@@ -1,6 +1,8 @@
 // ============================================
-// src/pages/X01End.tsx — Fin de partie robuste (MATCH ou LEG)
-// (sanitise Best CO pour éviter les valeurs absurdes)
+// src/pages/X01End.tsx — Fin de partie stylée (LEG/MATCH)
+// - Bouton "Reprendre" masqué si partie terminée
+// - Table compacte + stats bonus (180 / 140+ / 100+ / 60+)
+// - Sanitize Best CO pour éviter les valeurs absurdes
 // ============================================
 import React from "react";
 import { History } from "../lib/history";
@@ -36,7 +38,7 @@ export default function X01End({ go, params }: Props) {
             const m = mem.find((r) => r?.id === params.matchId);
             if (m) { mounted && setRec(m); return; }
           }
-          const lastFin = [...mem].find((r) => r?.status === "finished");
+          const lastFin = [...mem].find((r) => String(r?.status).toLowerCase() === "finished");
           if (lastFin) { mounted && setRec(lastFin); return; }
         }
         mounted && setErr("Impossible de charger l'enregistrement.");
@@ -51,11 +53,14 @@ export default function X01End({ go, params }: Props) {
   if (err) {
     return (
       <Shell go={go} title="Fin de partie">
-        <p style={{ color: "#bbb" }}>{err}</p>
+        <Notice>{err}</Notice>
       </Shell>
     );
   }
-  if (!rec) return <Shell go={go}><p style={{ color: "#bbb" }}>Chargement…</p></Shell>;
+  if (!rec) return <Shell go={go}><Notice>Chargement…</Notice></Shell>;
+
+  const status = normalizeStatus(rec);
+  const finished = status === "finished";
 
   const when = num(rec.updatedAt ?? rec.createdAt ?? Date.now());
   const dateStr = new Date(when).toLocaleString();
@@ -73,46 +78,49 @@ export default function X01End({ go, params }: Props) {
   // 2) sinon, tente de construire un résumé à partir d'un LEG
   const legSummary = !matchSummary ? buildSummaryFromLeg(rec) : null;
 
-  const title = rec?.kind === "x01" || rec?.kind === "leg"
-    ? "LEG"
-    : String((rec?.kind || "Fin")).toUpperCase();
+  const title = (rec?.kind === "x01" || rec?.kind === "leg" ? "LEG" : String(rec?.kind || "Fin").toUpperCase()) + " — " + dateStr;
+
+  // mapping "extras" (buckets) pour affichage chips
+  const extrasByPlayer: Record<string, { t180: number; t140: number; t100: number; t60: number }> =
+    extractExtras(rec, matchSummary || legSummary);
 
   return (
-    <Shell go={go} title={`${title} — ${dateStr}`} resumeId={params?.resumeId}>
-      <div style={{ opacity: 0.85, marginBottom: 10 }}>
-        Joueurs : {players.map((p) => p?.name || "—").join(" · ") || "—"}
-      </div>
-      {winnerName && (
-        <div style={{ marginBottom: 14, fontWeight: 800, color: "#ffcf57" }}>
-          🏆 Vainqueur : {winnerName}
+    <Shell go={go} title={title} canResume={!finished} resumeId={params?.resumeId}>
+      {/* Bandeau titre + vainqueur */}
+      <Panel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ fontWeight: 800, color: "#e8e8ec" }}>
+            Joueurs : {players.map((p) => p?.name || "—").join(" · ") || "—"}
+          </div>
+          {winnerName && (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#ffcf57", fontWeight: 900 }}>
+              <Trophy /> <span>{winnerName}</span>
+            </div>
+          )}
         </div>
-      )}
+      </Panel>
 
+      {/* Résumé compact */}
       {matchSummary ? (
-        <SummaryTable summary={matchSummary} />
+        <StatsTable summary={matchSummary} extras={extrasByPlayer} />
       ) : legSummary ? (
         <>
-          <div style={{ ...card(), marginBottom: 10, color: "#bbb" }}>
-            <b>Résumé (manche)</b> — reconstruit depuis les statistiques de la manche.
-          </div>
-          <SummaryTable summary={legSummary} />
+          <InfoCard><b>Résumé (manche)</b> — reconstruit depuis les statistiques de la manche.</InfoCard>
+          <StatsTable summary={legSummary} extras={extrasByPlayer} />
         </>
       ) : (
-        <div style={card()}>
-          <h3 style={{ marginTop: 0 }}>Résumé</h3>
-          <div style={{ color: "#bbb" }}>
-            Aucun résumé détaillé n’a été trouvé.
-          </div>
-        </div>
+        <Panel>
+          <h3 style={{ margin: "0 0 8px" }}>Résumé</h3>
+          <p style={{ margin: 0, color: "#bbb" }}>Aucun résumé détaillé n’a été trouvé.</p>
+        </Panel>
       )}
     </Shell>
   );
 }
 
-/* ======== Fallback LEG → summary x01-like ======== */
+/* ============ Reconstruction LEG → summary x01-like ============ */
 function buildSummaryFromLeg(rec: any) {
-  // Cherche d'abord un calcul riche __legStats (computeLegStats)
-  const leg = rec?.payload?.__legStats || rec?.__legStats;
+  const leg = rec?.payload?.__legStats || rec?.__legStats;     // stats riches si présentes
   const per = leg?.perPlayer;
   const list = leg?.players;
 
@@ -125,7 +133,7 @@ function buildSummaryFromLeg(rec: any) {
       const visits = num(s.visits);
       const points = num(s.pointsScored, (num(s.avg3) / 3) * (darts || visits * 3));
 
-      // ⛑️ sanitize Best CO dès la reconstruction
+      // Sanitize best checkout
       const rawCO = s.bestCheckoutScore ?? s.highestCheckout ?? s.bestCheckout;
       const bestCO = sanitizeCheckout(rawCO);
 
@@ -156,7 +164,7 @@ function buildSummaryFromLeg(rec: any) {
     );
   }
 
-  // Legacy fields présents directement sur payload/result
+  // Legacy (avg3/darts/visits/bestVisit/bestCheckout directement sur payload/result)
   const ids: string[] = Object.keys(rec?.payload?.avg3 || rec?.avg3 || {});
   if (ids.length) {
     const rows = ids.map((id) => ({ id, name: rec.players?.find((p: any) => p.id === id)?.name }));
@@ -175,70 +183,191 @@ function buildSummaryFromLeg(rec: any) {
   return null;
 }
 
-/* ======= UI bits ======= */
-function SummaryTable({ summary }: { summary: any }) {
-  const bestCO = (p: any) =>
-    sanitizeCheckout(p.bestCheckoutScore ?? p.highestCheckout ?? p.bestCheckout);
+/* ================== Extras (buckets) ================== */
+function extractExtras(rec: any, summary: any | null) {
+  const out: Record<string, { t180: number; t140: number; t100: number; t60: number }> = {};
+  const players = Object.keys(summary?.players || {});
+  for (const pid of players) {
+    const p = summary.players[pid] || {};
+    const b = p.buckets || {};
+    out[pid] = {
+      t180: num(b["180"], pick(rec, ["payload.h180."+pid, "h180."+pid], 0)),
+      t140: num(b["140+"], pick(rec, ["payload.h140."+pid, "h140."+pid], 0)),
+      t100: num(b["100+"], pick(rec, ["payload.h100."+pid, "h100."+pid], 0)),
+      t60:  num(b["60+"],  pick(rec, ["payload.h60."+pid,  "h60."+pid], 0)),
+    };
+  }
+  return out;
+}
 
+/* ================== UI — Table compacte ================== */
+function StatsTable({ summary, extras }: { summary: any; extras: Record<string, { t180: number; t140: number; t100: number; t60: number }>}) {
   return (
-    <div style={card()}>
-      <h3 style={{ marginTop: 0 }}>Résumé par joueur</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto auto", gap: 8 }}>
-        <div style={th()}>Joueur</div>
-        <div style={th()}>Moy/3D</div>
-        <div style={th()}>Best visit</div>
-        <div style={th()}>Best CO</div>
-        <div style={th()}>Darts</div>
+    <Panel style={{ padding: 12 }}>
+      <h3 style={{ margin: "0 0 10px", fontSize: 15, letterSpacing: 0.2, color: "#ffcf57" }}>Résumé par joueur</h3>
+
+      {/* Table compactée */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto auto auto auto",
+          gap: 6,
+          fontSize: 12.5,
+          lineHeight: 1.2,
+          alignItems: "center",
+        }}
+      >
+        <HeadCell>Joueur</HeadCell>
+        <HeadCell>Moy/3D</HeadCell>
+        <HeadCell>Best visit</HeadCell>
+        <HeadCell>Best CO</HeadCell>
+        <HeadCell>Darts</HeadCell>
+
         {Object.keys(summary.players).map((pid) => {
           const p = summary.players[pid];
+          const bestCO = sanitizeCheckout(p.bestCheckoutScore ?? p.highestCheckout ?? p.bestCheckout);
+
           return (
             <React.Fragment key={pid}>
-              <div style={td(p.win ? "#7fe2a9" : undefined)}>
+              <Cell style={{ textAlign: "left", color: p.win ? "#7fe2a9" : "#e8e8ec" }}>
                 {p.name || "—"}{p.win ? " (win)" : ""}
+              </Cell>
+              <Cell>{to2(p.avg3)}</Cell>
+              <Cell>{i0(p.bestVisit)}</Cell>
+              <Cell>{i0(bestCO)}</Cell>
+              <Cell>{i0(p.darts)}</Cell>
+
+              {/* Ligne chips extras (sous toute la ligne) */}
+              <div style={{ gridColumn: "1 / -1", margin: "2px 0 6px" }}>
+                <ChipsRow items={[
+                  ["180", extras[pid]?.t180 || 0],
+                  ["140+", extras[pid]?.t140 || 0],
+                  ["100+", extras[pid]?.t100 || 0],
+                  ["60+", extras[pid]?.t60 || 0],
+                ]}/>
               </div>
-              <div style={td()}>{to2(p.avg3)}</div>
-              <div style={td()}>{fix(p.bestVisit, 0)}</div>
-              <div style={td()}>{fix(bestCO(p), 0)}</div>
-              <div style={td()}>{fix(p.darts, 0)}</div>
             </React.Fragment>
           );
         })}
       </div>
-    </div>
+    </Panel>
   );
 }
 
-function Shell({ go, title, children, resumeId }: any) {
+/* ================== Shell & styles ================== */
+function Shell({ go, title, children, canResume, resumeId }: any) {
   return (
     <div style={{ padding: 16, maxWidth: 620, margin: "0 auto" }}>
-      <button onClick={() => go("stats", { tab: "history" })} style={btn()}>
-        ← Retour
-      </button>
-      <h2 style={{ margin: "12px 0 6px" }}>{title || "Fin de partie"}</h2>
+      <button onClick={() => go("stats", { tab: "history" })} style={btn()}>← Retour</button>
+      <h2 style={{ margin: "12px 0 10px", letterSpacing: 0.3 }}>{title || "Fin de partie"}</h2>
       {children}
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-        <button onClick={() => go("stats", { tab: "history" })} style={btn()}>
-          ← Retour à l’historique
-        </button>
-        {resumeId && (
-          <button onClick={() => go("x01", { resumeId })} style={btnGold()}>
-            Reprendre
-          </button>
+        <button onClick={() => go("stats", { tab: "history" })} style={btn()}>← Retour à l’historique</button>
+        {canResume && resumeId && (
+          <button onClick={() => go("x01", { resumeId })} style={btnGold()}>Reprendre</button>
         )}
       </div>
     </div>
   );
 }
 
-/* ===== Helpers & styles ===== */
+function Panel({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return (
+    <div
+      style={{
+        padding: 12,
+        borderRadius: 16,
+        border: "1px solid rgba(255,255,255,.08)",
+        background:
+          "radial-gradient(120% 140% at 0% 0%, rgba(255,195,26,.06), transparent 55%), linear-gradient(180deg, rgba(22,22,26,.96), rgba(14,14,16,.98))",
+        boxShadow: "0 18px 46px rgba(0,0,0,.35)",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ✅ Manquant précédemment : petit encart informatif
+function InfoCard({ children }: { children: React.ReactNode }) {
+  return (
+    <Panel style={{ color: "#bbb", padding: 10, margin: "8px 0" }}>
+      {children}
+    </Panel>
+  );
+}
+
+function Notice({ children }: { children: React.ReactNode }) {
+  return (
+    <Panel>
+      <div style={{ color: "#bbb" }}>{children}</div>
+    </Panel>
+  );
+}
+
+function ChipsRow({ items }: { items: [string, number][] }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {items.map(([label, val]) => (
+        <div
+          key={label}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 26,
+            padding: "0 10px",
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,.08)",
+            background: "rgba(255,255,255,.06)",
+            fontSize: 12,
+            fontWeight: 800,
+            letterSpacing: 0.2,
+            color: "#e8e8ec",
+          }}
+        >
+          <span style={{ color: "#ffcf57" }}>{label}</span>
+          <span>{i0(val)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HeadCell({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontWeight: 800, color: "#ffcf57", padding: "3px 0" }}>{children}</div>;
+}
+function Cell({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return <div style={{ padding: "2px 0", color: "#e8e8ec", textAlign: "right", fontVariantNumeric: "tabular-nums", ...style }}>{children}</div>;
+}
+
+/* ================== Icons ================== */
+function Trophy(props: any) {
+  return (
+    <svg viewBox="0 0 24 24" width={18} height={18} {...props}>
+      <path fill="currentColor" d="M6 2h12v2h3a1 1 0 0 1 1 1v1a5 5 0 0 1-5 5h-1.1A6 6 0 0 1 13 13.9V16h3v2H8v-2h3v-2.1A6 6 0 0 1 8.1 11H7A5 5 0 0 1 2 6V5a1 1 0 0 1 1-1h3V2Z"/>
+    </svg>
+  );
+}
+
+/* ================== Utils ================== */
+function normalizeStatus(rec: any): "finished" | "in_progress" {
+  const s = String(rec?.status || "").toLowerCase();
+  if (s === "finished") return "finished";
+  if (s === "inprogress" || s === "in_progress") return "in_progress";
+  const sum = rec?.summary || rec?.payload || {};
+  if (sum?.finished === true || sum?.result?.finished === true) return "finished";
+  return "in_progress";
+}
+
 function sanitizeCheckout(v: any): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
   const r = Math.round(n);
-  // Domaines plausibles (sorties): 2..170 (ex: T20 T20 D25) + 50 (DBULL).
-  if (r === 50) return 50;
-  if (r >= 2 && r <= 170) return r;
-  return 0; // on jette les valeurs absurdes (ex: concat de chiffres)
+  if (r === 50) return 50;           // DBULL
+  if (r >= 2 && r <= 170) return r;  // plage plausible des checkouts
+  return 0;
 }
 
 function btn(): React.CSSProperties {
@@ -247,16 +376,10 @@ function btn(): React.CSSProperties {
 function btnGold(): React.CSSProperties {
   return { borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,180,0,.3)", background: "linear-gradient(180deg,#ffc63a,#ffaf00)", color: "#141417", fontWeight: 900, cursor: "pointer", boxShadow: "0 10px 22px rgba(255,170,0,.28)" };
 }
-function card(): React.CSSProperties {
-  return { padding: 12, borderRadius: 12, border: "1px solid rgba(255,255,255,.08)", background: "linear-gradient(180deg, rgba(22,22,26,.96), rgba(14,14,16,.98))" };
-}
-function th(): React.CSSProperties { return { fontWeight: 800, color: "#ffcf57", padding: "4px 0" }; }
-function td(color?: string): React.CSSProperties { return { padding: "2px 0", color: color || "#e8e8ec", textAlign: "right", fontVariantNumeric: "tabular-nums" }; }
-
-function num(x: any, d = Date.now()) { const n = Number(x); return Number.isFinite(n) ? n : d; }
+function num(x: any, d = 0) { const n = Number(x); return Number.isFinite(n) ? n : d; }
 function to2(x: any) { const v = Number(x); return Number.isFinite(v) ? v.toFixed(2) : "0.00"; }
-function fix(x: any, d = 0) { const n = Number(x); if (!Number.isFinite(n)) return String(d); return Math.abs(n) < 1000 && n !== (n | 0) ? n.toFixed(2) : String(n | 0); }
-function pick(obj: any, paths: string[]) {
+function i0(x: any) { const n = Number(x); return Number.isFinite(n) ? (n | 0) : 0; }
+function pick(obj: any, paths: string[], def?: any) {
   for (const p of paths) {
     const segs = p.split(".");
     let cur = obj;
@@ -267,5 +390,5 @@ function pick(obj: any, paths: string[]) {
     }
     if (ok) return cur;
   }
-  return undefined;
+  return def;
 }

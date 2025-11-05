@@ -26,6 +26,8 @@ import ShanghaiPlay from "./pages/ShanghaiPlay";
 import LobbyPick from "./pages/LobbyPick";
 import StatsHub from "./pages/StatsHub";
 import X01End from "./pages/X01End";
+// ✅ Nouvelle page
+import AvatarCreator from "./pages/AvatarCreator";
 
 // Historique (pour StatsDetail / upsert / get)
 import { History } from "./lib/history";
@@ -44,7 +46,9 @@ type Tab =
   | "x01_end"
   | "cricket"
   | "killer"
-  | "shanghai";
+  | "shanghai"
+  // ✅ nouvelle route par onglet
+  | "avatar";
 
 // Store initial minimal (empêche les crashes pendant le chargement)
 const initialStore: Store = {
@@ -468,6 +472,22 @@ export default function App() {
 
       case "shanghai": {
         page = <ShanghaiPlay playerIds={[]} onFinish={pushHistory} />;
+        break;
+      }
+
+      // ✅ Nouvelle page : Créateur d'avatar
+      case "avatar": {
+        page = (
+          <div style={{ padding: 16 }}>
+            <button onClick={() => go("profiles")} style={{ marginBottom: 12 }}>
+              ← Retour
+            </button>
+            <AvatarCreator
+              size={512}
+              overlaySrc="/assets/medallion.svg" // remplace par ton médaillon étoilé
+            />
+          </div>
+        );
         break;
       }
 
