@@ -10,6 +10,8 @@ import StatsPlayerDashboard, {
 } from "../components/StatsPlayerDashboard";
 import { GoldPill, ProfilePill } from "../components/StatsPlayerDashboard";
 import { useQuickStats } from "../hooks/useQuickStats";
+import { getBasicProfileStats } from "../lib/statsBridge";
+import HistoryPage from "./HistoryPage";
 
 /* ---------- Thème local ---------- */
 const T = {
@@ -42,9 +44,11 @@ type Props = {
 
 /* ---------- Helpers ---------- */
 const toArr = <T,>(v: any): T[] => (Array.isArray(v) ? (v as T[]) : []);
-const toObj = <T,>(v: any): T => (v && typeof v === "object" ? (v as T) : ({} as T));
+const toObj = <T,>(v: any): T =>
+  v && typeof v === "object" ? (v as T) : ({} as T);
 const N = (x: any, d = 0) => (Number.isFinite(Number(x)) ? Number(x) : d);
-const fmtDate = (ts?: number) => new Date(N(ts, Date.now())).toLocaleString();
+const fmtDate = (ts?: number) =>
+  new Date(N(ts, Date.now())).toLocaleString();
 
 /* ---------- Hooks ---------- */
 function useHistoryAPI(): SavedMatch[] {
@@ -161,7 +165,8 @@ const row: React.CSSProperties = {
 /* ---------- Page ---------- */
 export default function StatsHub(props: Props) {
   const go = props.go ?? (() => {});
-  const initialTab: "history" | "stats" = props.tab === "stats" ? "stats" : "history";
+  const initialTab: "history" | "stats" =
+    props.tab === "stats" ? "stats" : "history";
   const [tab, setTab] = React.useState<"history" | "stats">(initialTab);
 
   const persisted = useHistoryAPI();
@@ -210,7 +215,8 @@ export default function StatsHub(props: Props) {
   React.useEffect(() => {
     if (!selectedPlayerId && players[0]?.id) setSelectedPlayerId(players[0].id);
   }, [players, selectedPlayerId]);
-  const selectedPlayer = players.find((p) => p.id === selectedPlayerId) || players[0];
+  const selectedPlayer =
+    players.find((p) => p.id === selectedPlayerId) || players[0];
 
   // ---- LIVE quick stats (store.*) pour le joueur sélectionné
   const quick = useQuickStats(selectedPlayer?.id || null);
@@ -231,9 +237,10 @@ export default function StatsHub(props: Props) {
       </div>
 
       {tab === "history" ? (
-        <HistoryList
-          records={records}
-          onOpen={(rec) => go("statsDetail", { matchId: rec.id })}
+        // ⬇️ Remplacement : on monte la nouvelle page Historique
+        <HistoryPage
+          store={{ history: records } as any} // on réutilise les enregistrements fusionnés
+          go={go}
         />
       ) : (
         <>
@@ -287,7 +294,9 @@ export default function StatsHub(props: Props) {
   );
 }
 
-/* ---------- Historique ---------- */
+/* ---------- Historique (ancien composant) ----------
+   Conservé ci-dessous mais plus utilisé. Tu peux le supprimer plus tard si tu veux.
+*/
 function HistoryList({
   records,
   onOpen,

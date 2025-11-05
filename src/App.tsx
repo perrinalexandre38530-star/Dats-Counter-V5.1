@@ -27,7 +27,7 @@ import LobbyPick from "./pages/LobbyPick";
 import StatsHub from "./pages/StatsHub";
 import X01End from "./pages/X01End";
 
-// Historique (pour StatsDetail minimal)
+// Historique (pour StatsDetail / upsert / get)
 import { History } from "./lib/history";
 
 // --------------------------------------------
@@ -163,6 +163,11 @@ export default function App() {
   React.useEffect(() => {
     ensurePersisted().catch(() => {});
   }, []);
+
+  // ⚠️ Expose le store en global pour les fallbacks (X01End / autres)
+  React.useEffect(() => {
+    (window as any).__appStore = store;
+  }, [store]);
 
   // Mémo config X01
   const [x01Config, setX01Config] = React.useState<{
@@ -336,6 +341,21 @@ export default function App() {
         const toArr = (v: any) => (Array.isArray(v) ? v : []);
         const N = (v: any, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
+        if (routeParams?.showEnd && rec) {
+          // Option : afficher directement l’overlay de fin si demandé
+          page = (
+            <X01End
+              go={go}
+              params={{
+                matchId: rec.id,
+                resumeId: rec.resumeId ?? rec.payload?.resumeId,
+                showEnd: true,
+              }}
+            />
+          );
+          break;
+        }
+
         if (rec) {
           const when = N(rec.updatedAt ?? rec.createdAt ?? Date.now(), Date.now());
           const dateStr = new Date(when).toLocaleString();
@@ -345,6 +365,7 @@ export default function App() {
             ? (players.find((p: any) => p?.id === rec.winnerId)?.name ?? "—")
             : null;
 
+          // Placeholder léger tant que la page détaillée finale n’est pas branchée :
           page = (
             <div style={{ padding: 16 }}>
               <button onClick={() => go("stats", { tab: "history" })} style={{ marginBottom: 12 }}>
@@ -415,6 +436,8 @@ export default function App() {
       }
 
       case "x01_end": {
+        // Reçoit params.rec | params.matchId | params.resumeId
+        // X01End doit afficher l’overlay quand showEnd === true
         page = <X01End go={go} params={routeParams} />;
         break;
       }
@@ -433,7 +456,7 @@ export default function App() {
             }}
           />
         );
-        // Placeholder:
+        // Placeholder jeu
         page = <CricketPlay playerIds={[]} onFinish={pushHistory} />;
         break;
       }

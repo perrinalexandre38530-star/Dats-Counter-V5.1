@@ -1,10 +1,6 @@
-// ============================================
-// /public/sw.js — PWA stable + auto-update + safe dev mode
-// ============================================
-
-const VERSION = 'v2025-11-04-01'; // 🔁 INCRÉMENTE à chaque déploiement
+// /public/sw.js — PWA stable + auto-update + purge des vieux caches
+const VERSION = 'v2025-11-02-01';            // 🔁 INCRÉMENTE à chaque déploiement
 const CACHE_STATIC = `dc-v5-static-${VERSION}`;
-const ORIGIN = self.location.origin;
 
 // 🔹 Shell/Assets à pré-cacher (icônes, etc.)
 const ASSETS = [
@@ -12,9 +8,7 @@ const ASSETS = [
   '/app-512.png',
 ];
 
-/* --------------------------------------------
-   INSTALL — Pré-cache des assets essentiels
--------------------------------------------- */
+// Installe instantanément + pré-cache des assets statiques
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
@@ -22,77 +16,56 @@ self.addEventListener('install', (event) => {
   );
 });
 
-/* --------------------------------------------
-   ACTIVATE — Purge des vieux caches + prise de contrôle immédiate
--------------------------------------------- */
+// Prend le contrôle + purge TOUTES les anciennes versions
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    (async () => {
-      const keys = await caches.keys();
-      await Promise.all(
-        keys.filter((k) => k !== CACHE_STATIC).map((k) => caches.delete(k))
-      );
-      await self.clients.claim();
-    })()
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(
+      keys.filter((k) => k !== CACHE_STATIC).map((k) => caches.delete(k))
+    );
+    await self.clients.claim();
+  })());
 });
 
-/* --------------------------------------------
-   MESSAGE — Forcer SKIP_WAITING sur update
--------------------------------------------- */
+// Permet de forcer l’activation dès qu’une nouvelle build est dispo
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
-/* --------------------------------------------
-   FETCH — Stratégies de réponse
--------------------------------------------- */
+// Stratégies de réponse
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
   // On ne gère que GET
   if (req.method !== 'GET') return;
 
-  const url = new URL(req.url);
-
-  // ⚠️ Ignore les requêtes externes et StackBlitz/HMR (sinon crash en dev)
-  if (
-    url.origin !== ORIGIN ||
-    /^\/@vite\//.test(url.pathname) ||
-    /\.map$/i.test(url.pathname)
-  )
-    return;
-
-  // 🔸 HTML / navigation : NETWORK-FIRST
+  // 🔸 Navigation / HTML : NETWORK-FIRST pour toujours récupérer la dernière build
   const isDoc = req.mode === 'navigate' || req.destination === 'document';
   if (isDoc) {
     event.respondWith(networkFirst(req));
     return;
   }
 
-  // 🔸 Assets statiques (js/css/img/fonts) : CACHE-FIRST + runtime cache
-  const isStatic = /\.(js|css|png|jpg|jpeg|gif|svg|webp|ico|woff2?)$/i.test(
-    url.pathname
-  );
+  // 🔸 Assets statiques (js/css/img/fonts) : CACHE-FIRST + mise en cache runtime
+  const url = new URL(req.url);
+  const isStatic = /\.(js|css|png|jpg|jpeg|gif|svg|webp|ico|woff2?)$/i.test(url.pathname);
   if (isStatic) {
     event.respondWith(cacheFirst(req));
     return;
   }
 
-  // 🔸 Fallback : réseau direct
+  // défaut : réseau direct (pas de cache)
   event.respondWith(fetch(req).catch(() => caches.match(req)));
 });
 
-/* --------------------------------------------
-   STRATÉGIES
--------------------------------------------- */
 async function networkFirst(req) {
   try {
     const fresh = await fetch(req);
-    return fresh; // on ne met pas index.html en cache longue durée
+    // On ne met PAS index.html en cache longue durée pour éviter le stale
+    return fresh;
   } catch (err) {
-    // Hors-ligne → fallback éventuel
-    return (await caches.match('/index.html')) || new Response('', { status: 503 });
+    // Si hors-ligne, tente un fallback éventuel
+    return caches.match('/index.html') || new Response('', { status: 503 });
   }
 }
 

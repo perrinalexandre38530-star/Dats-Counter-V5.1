@@ -116,35 +116,36 @@ export function buildX01Summary(opts: {
  * - additionne les buckets
  */
 export async function commitMatchSummary(summary: X01Summary): Promise<void> {
-  const store = await loadStore().catch(() => null as any);
-  const s = store || {};
+  const store = await loadStore<any>().catch(() => null as any);
+  const s: any = store || {};
   if (!s.statsByPlayer) s.statsByPlayer = {};
 
   for (const pid of Object.keys(summary.players)) {
     const src = summary.players[pid];
 
-    const cur = s.statsByPlayer[pid] || {
-      id: pid,
-      name: src.name,
+    const cur =
+      s.statsByPlayer[pid] || {
+        id: pid,
+        name: src.name,
 
-      // cumul visibles
-      matches: 0,
-      legs: 0,
-      wins: 0,
-      bestVisit: 0,
-      bestCheckout: 0,
-      avg3: 0,
-      darts: 0,
+        // cumul visibles
+        matches: 0,
+        legs: 0,
+        wins: 0,
+        bestVisit: 0,
+        bestCheckout: 0,
+        avg3: 0,
+        darts: 0,
 
-      // internes
-      _sumPoints: 0,
-      _sumDarts: 0,
-      _sumVisits: 0,
+        // internes
+        _sumPoints: 0,
+        _sumDarts: 0,
+        _sumVisits: 0,
 
-      // buckets
-      buckets: {} as Record<string, number>,
-      updatedAt: 0,
-    };
+        // buckets
+        buckets: {} as Record<string, number>,
+        updatedAt: 0,
+      };
 
     // cumuls de compteurs
     cur.matches += 1;
@@ -165,8 +166,7 @@ export async function commitMatchSummary(summary: X01Summary): Promise<void> {
 
     // moyenne pondérée (fallback si _sumDarts==0 mais _sumVisits>0)
     const denom =
-      cur._sumDarts > 0 ? cur._sumDarts :
-      (cur._sumVisits > 0 ? cur._sumVisits * 3 : 0);
+      cur._sumDarts > 0 ? cur._sumDarts : cur._sumVisits > 0 ? cur._sumVisits * 3 : 0;
 
     cur.avg3 = denom > 0 ? (cur._sumPoints / denom) * 3 : 0;
 
@@ -185,7 +185,7 @@ export async function commitMatchSummary(summary: X01Summary): Promise<void> {
 
   await saveStore(s);
 
-  // Ping UI
+  // Ping UI (facultatif) — permet à un écran d'écouter une inval
   try {
     localStorage.setItem("__stats_dirty", String(Date.now()));
   } catch {}

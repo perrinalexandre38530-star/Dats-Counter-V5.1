@@ -1069,7 +1069,7 @@ export default function X01Play({
           const as = remaining[a.id] ?? startScore;
           const bs = remaining[b.id] ?? startScore;
           if (as === 0 && bs !== 0) return -1;
-          if (bs === 0 && as !== 0) return 1;
+          if (!as && bs === 0) return 1;
           if (as !== bs) return as - bs;
           return (avg3[b.id] ?? 0) - (avg3[a.id] ?? 0);
         })
