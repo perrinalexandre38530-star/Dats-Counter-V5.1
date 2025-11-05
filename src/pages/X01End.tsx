@@ -1,9 +1,11 @@
 // ============================================
-// src/pages/X01End.tsx — Fin de partie stylée (LEG/MATCH)
+// src/pages/X01End.tsx — Fin de partie ultra-complète (LEG/MATCH)
+// - Tables stylées : Volumes • Power Scoring • Checkout • Précision
+// - Stats bonus : 180/140+/100+/60+, Doubles/Triples/Bulls (+ % si dispo)
+//   Visits, Points, Avg/1D, Avg/3D, First9, Best visit, Best CO,
+//   Highest non-checkout (si dispo), Darts to Finish (si dispo)
+// - Lecture robuste summary -> __legStats -> legacy payload/result
 // - Bouton "Reprendre" masqué si partie terminée
-// - Table compacte + stats bonus : 180 / 140+ / 100+ / 60+
-//   + Doubles / Triples / Bulls + Visits / Points + Checkout%
-// - Lecture robuste (summary -> legStats -> legacy payload)
 // ============================================
 import React from "react";
 import { History } from "../lib/history";
@@ -73,17 +75,18 @@ export default function X01End({ go, params }: Props) {
   const winnerName =
     (winnerId && (players.find((p) => p.id === winnerId)?.name || null)) || null;
 
-  // 1) summary normalisé (playerStats.ts)
+  // 1) Summary normalisé (playerStats.ts)
   const matchSummary = rec.summary && rec.summary.kind === "x01" ? rec.summary : null;
 
-  // 2) fallback depuis __legStats ou legacy
+  // 2) Fallback depuis __legStats / legacy
   const legSummary = !matchSummary ? buildSummaryFromLeg(rec) : null;
 
-  const title = (rec?.kind === "x01" || rec?.kind === "leg" ? "LEG" : String(rec?.kind || "Fin").toUpperCase()) + " — " + dateStr;
+  const title =
+    (rec?.kind === "x01" || rec?.kind === "leg" ? "LEG" : String(rec?.kind || "Fin").toUpperCase()) +
+    " — " + dateStr;
 
-  // Extras (buckets + impacts doubles/triples/bulls + visits/points/checkout)
-  const extrasByPlayer: Record<string, Extras> =
-    extractExtras(rec, matchSummary || legSummary);
+  // ====== Extraction d’un bloc "metrics" par joueur (fusion de toutes les sources) ======
+  const metrics = buildPerPlayerMetrics(rec, matchSummary || legSummary, players);
 
   return (
     <Shell go={go} title={title} canResume={!finished} resumeId={params?.resumeId}>
@@ -101,25 +104,87 @@ export default function X01End({ go, params }: Props) {
         </div>
       </Panel>
 
-      {/* Résumé compact */}
-      {matchSummary ? (
-        <StatsTable summary={matchSummary} extras={extrasByPlayer} />
-      ) : legSummary ? (
-        <>
-          <InfoCard><b>Résumé (manche)</b> — reconstruit depuis les statistiques de la manche.</InfoCard>
-          <StatsTable summary={legSummary} extras={extrasByPlayer} />
-        </>
-      ) : (
-        <Panel>
-          <h3 style={{ margin: "0 0 8px" }}>Résumé</h3>
-          <p style={{ margin: 0, color: "#bbb" }}>Aucun résumé détaillé n’a été trouvé.</p>
-        </Panel>
+      {/* Info si fallback manche */}
+      {!matchSummary && legSummary && (
+        <InfoCard>
+          <b>Résumé (manche)</b> — reconstruit depuis les statistiques de la manche.
+        </InfoCard>
       )}
+
+      {/* TABLE 1 — Volumes */}
+      <TableCard title="Volumes">
+        <Table
+          headers={["Joueur", "Avg/3D", "Avg/1D", "Best visit", "Best CO", "Darts", "Visits", "Points", "First9", "Darts to finish"]}
+          rows={players.map((p) => {
+            const m = metrics[p.id] || emptyMetrics(p);
+            return [
+              nameCell(m),
+              n2(m.avg3),
+              n2(m.avg1),
+              n0(m.bestVisit),
+              n0(m.bestCO),
+              n0(m.darts),
+              n0(m.visits),
+              n0(m.points),
+              m.first9 ? n2(m.first9) : "—",
+              m.dartsToFinish ? n0(m.dartsToFinish) : "—",
+            ];
+          })}
+        />
+      </TableCard>
+
+      {/* TABLE 2 — Power scoring */}
+      <TableCard title="Power scoring">
+        <Table
+          headers={["Joueur", "180", "140+", "100+", "60+"]}
+          rows={players.map((p) => {
+            const m = metrics[p.id] || emptyMetrics(p);
+            return [nameCell(m), n0(m.t180), n0(m.t140), n0(m.t100), n0(m.t60)];
+          })}
+        />
+      </TableCard>
+
+      {/* TABLE 3 — Checkout */}
+      <TableCard title="Checkout">
+        <Table
+          headers={["Joueur", "Best CO", "CO hits", "CO att.", "CO %", "Highest non-CO"]}
+          rows={players.map((p) => {
+            const m = metrics[p.id] || emptyMetrics(p);
+            return [
+              nameCell(m),
+              n0(m.bestCO),
+              n0(m.coHits),
+              n0(m.coAtt),
+              pct(m.coPct),
+              m.highestNonCO ? n0(m.highestNonCO) : "—",
+            ];
+          })}
+        />
+      </TableCard>
+
+      {/* TABLE 4 — Précision (impacts) */}
+      <TableCard title="Précision (impacts)">
+        <Table
+          headers={["Joueur", "Doubles", "Dbl %", "Triples", "Trpl %", "Bulls", "Bulls %"]}
+          rows={players.map((p) => {
+            const m = metrics[p.id] || emptyMetrics(p);
+            return [
+              nameCell(m),
+              n0(m.doubles),
+              pct(m.doublePct),
+              n0(m.triples),
+              pct(m.triplePct),
+              n0(m.bulls),
+              pct(m.bullPct),
+            ];
+          })}
+        />
+      </TableCard>
     </Shell>
   );
 }
 
-/* ============ Reconstruction LEG → summary x01-like ============ */
+/* ====================== Normalisation "summary" depuis LEG/legacy ====================== */
 function buildSummaryFromLeg(rec: any) {
   const leg = rec?.payload?.__legStats || rec?.__legStats;
   const per = leg?.perPlayer;
@@ -133,7 +198,6 @@ function buildSummaryFromLeg(rec: any) {
       const darts = num(s.dartsThrown ?? s.darts);
       const visits = num(s.visits);
       const points = num(s.pointsScored, (num(s.avg3) / 3) * (darts || visits * 3));
-
       const rawCO = s.bestCheckoutScore ?? s.highestCheckout ?? s.bestCheckout;
       const bestCO = sanitizeCheckout(rawCO);
 
@@ -183,141 +247,200 @@ function buildSummaryFromLeg(rec: any) {
   return null;
 }
 
-/* ================== Extras (buckets & impacts) ================== */
-type Extras = {
+/* ====================== Fusion/Extraction métriques par joueur ====================== */
+type PlayerMetrics = {
+  id: string; name: string;
+  // volumes
+  darts: number; visits: number; points: number; avg1: number; avg3: number;
+  bestVisit: number; bestCO: number; first9?: number; dartsToFinish?: number;
+  // power
   t180: number; t140: number; t100: number; t60: number;
+  // impacts
   doubles: number; triples: number; bulls: number;
-  visits: number; points: number;
-  coHits: number; coAtt: number; coPct: number;
+  doublePct?: number; triplePct?: number; bullPct?: number;
+  // checkout
+  coHits: number; coAtt: number; coPct: number; highestNonCO?: number;
 };
 
-function extractExtras(rec: any, summary: any | null): Record<string, Extras> {
-  const out: Record<string, Extras> = {};
+function emptyMetrics(p: { id: string; name?: string }): PlayerMetrics {
+  return {
+    id: p.id, name: p.name || "—",
+    darts: 0, visits: 0, points: 0, avg1: 0, avg3: 0,
+    bestVisit: 0, bestCO: 0, first9: undefined, dartsToFinish: undefined,
+    t180: 0, t140: 0, t100: 0, t60: 0,
+    doubles: 0, triples: 0, bulls: 0,
+    doublePct: undefined, triplePct: undefined, bullPct: undefined,
+    coHits: 0, coAtt: 0, coPct: 0, highestNonCO: undefined,
+  };
+}
+
+function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLite[]) {
+  const out: Record<string, PlayerMetrics> = {};
   const per = rec?.payload?.__legStats?.perPlayer || rec?.__legStats?.perPlayer || {};
-  const players = Object.keys(summary?.players || {});
-  for (const pid of players) {
-    const s = summary?.players?.[pid] || {};
-    const pRich = per?.[pid] || {};
+  const legacy = rec?.payload || rec || {};
 
-    const buckets = s.buckets || {};
-    const t180 = num(buckets["180"], pick(rec, ["payload.h180."+pid, "h180."+pid], 0));
-    const t140 = num(buckets["140+"], pick(rec, ["payload.h140."+pid, "h140."+pid], 0));
-    const t100 = num(buckets["100+"], pick(rec, ["payload.h100."+pid, "h100."+pid], 0));
-    const t60  = num(buckets["60+"],  pick(rec, ["payload.h60."+pid,  "h60."+pid], 0));
+  for (const pl of players) {
+    const pid = pl.id;
+    const base = emptyMetrics(pl);
 
-    // impacts
-    const doubles = num(
-      pRich.doubles,
-      pick(rec, ["payload.doubles."+pid, "doubles."+pid], 0)
-    );
-    const triples = num(
-      pRich.triples,
-      pick(rec, ["payload.triples."+pid, "triples."+pid], 0)
-    );
-    const bulls = num(
-      pRich.bulls,
-      pick(rec, ["payload.bulls."+pid, "bulls."+pid], 0)
-    );
+    // ---- from summary (playerStats.ts / LEG summary) ----
+    const s = summary?.players?.[pid];
+    if (s) {
+      base.avg3 = num(s.avg3);
+      base.avg1 = base.avg3 / 3;
+      base.bestVisit = num(s.bestVisit);
+      base.bestCO = sanitizeCheckout(s.bestCheckout);
+      base.darts = num(s.darts);
+      base.visits = s._sumVisits ? num(s._sumVisits) : (base.darts ? Math.ceil(base.darts / 3) : 0);
+      base.points = num(s._sumPoints);
+      // buckets
+      const b = s.buckets || {};
+      base.t180 = num(b["180"]);
+      base.t140 = num(b["140+"]);
+      base.t100 = num(b["100+"]);
+      base.t60  = num(b["60+"]);
+    }
 
-    // visites / points
-    const visits = num(
-      pRich.visits ?? s._sumVisits,
-      pick(rec, ["payload.visits."+pid, "visits."+pid], 0)
-    );
-    const points = num(
-      pRich.pointsScored ?? s._sumPoints,
-      pick(rec, ["payload.pointsScored."+pid, "pointsScored."+pid], 0)
-    );
+    // ---- from rich perPlayer ----
+    const r = per?.[pid] || {};
+    base.first9 = num(r.first9Avg, base.first9 || 0) || undefined;
+    base.highestNonCO = num(r.highestNonCheckout, base.highestNonCO || 0) || undefined;
+    base.dartsToFinish = num(r.dartsToFinish, base.dartsToFinish || 0) || undefined;
+
+    base.doubles = num(r.doubles, base.doubles);
+    base.triples = num(r.triples, base.triples);
+    base.bulls   = num(r.bulls, base.bulls);
+
+    // attempts/accuracy if available
+    const dblAtt = num(r.doubleAttempts, 0);
+    const trpAtt = num(r.tripleAttempts, 0);
+    const bulAtt = num(r.bullAttempts, 0);
+    base.doublePct = dblAtt > 0 ? (num(r.doubleHits, 0) / dblAtt) * 100 : base.doublePct;
+    base.triplePct = trpAtt > 0 ? (num(r.tripleHits, 0) / trpAtt) * 100 : base.triplePct;
+    base.bullPct   = bulAtt > 0 ? (num(r.bullHits, 0) / bulAtt) * 100 : base.bullPct;
 
     // checkout
-    const coHits = num(
-      pRich.checkoutHits,
-      pick(rec, ["payload.checkoutHits."+pid, "checkoutHits."+pid], 0)
-    );
-    const coAtt = num(
-      pRich.checkoutAttempts,
-      pick(rec, ["payload.checkoutAttempts."+pid, "checkoutAttempts."+pid], 0)
-    );
-    const coPct = coAtt > 0 ? Math.round((coHits / coAtt) * 100) : 0;
+    base.coHits = num(r.checkoutHits, base.coHits);
+    base.coAtt  = num(r.checkoutAttempts, base.coAtt);
+    base.coPct  = base.coAtt > 0 ? Math.round((base.coHits / base.coAtt) * 100) : base.coPct;
 
-    out[pid] = { t180, t140, t100, t60, doubles, triples, bulls, visits, points, coHits, coAtt, coPct };
+    // volumes fallback if missing
+    base.visits = base.visits || num(r.visits, 0);
+    base.points = base.points || num(r.pointsScored, 0);
+    base.avg3   = base.avg3 || num(r.avg3, 0);
+    base.avg1   = base.avg1 || (base.avg3 ? base.avg3 / 3 : 0);
+    base.bestVisit = base.bestVisit || num(r.bestVisit, 0);
+    base.bestCO = base.bestCO || sanitizeCheckout(r.bestCheckoutScore ?? r.highestCheckout ?? r.bestCheckout);
+
+    // ---- legacy payload fields ----
+    base.t180 = base.t180 || num(pick(legacy, ["h180."+pid, "h180?.[pid]"]), 0);
+    base.t140 = base.t140 || num(pick(legacy, ["h140."+pid, "h140?.[pid]"]), 0);
+    base.t100 = base.t100 || num(pick(legacy, ["h100."+pid, "h100?.[pid]"]), 0);
+    base.t60  = base.t60  || num(pick(legacy, ["h60."+pid,  "h60?.[pid]"]),  0);
+
+    base.darts  = base.darts  || num(pick(legacy, ["darts."+pid]), 0);
+    base.visits = base.visits || num(pick(legacy, ["visits."+pid]), 0);
+    base.points = base.points || num(pick(legacy, ["pointsScored."+pid]), 0);
+    base.avg3   = base.avg3   || num(pick(legacy, ["avg3."+pid]), 0);
+    base.avg1   = base.avg1   || (base.avg3 ? base.avg3 / 3 : 0);
+    base.bestVisit = base.bestVisit || num(pick(legacy, ["bestVisit."+pid]), 0);
+    base.bestCO    = base.bestCO    || sanitizeCheckout(pick(legacy, ["bestCheckout."+pid]));
+
+    base.coHits = base.coHits || num(pick(legacy, ["checkoutHits."+pid]), 0);
+    base.coAtt  = base.coAtt  || num(pick(legacy, ["checkoutAttempts."+pid]), 0);
+    base.coPct  = base.coPct  || (base.coAtt > 0 ? Math.round((base.coHits / base.coAtt) * 100) : 0);
+
+    out[pid] = base;
   }
+
   return out;
 }
 
-/* ================== UI — Table compacte ================== */
-function StatsTable({ summary, extras }: { summary: any; extras: Record<string, Extras>}) {
+/* =========================== UI : Tables stylées =========================== */
+function TableCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Panel style={{ padding: 12 }}>
-      <h3 style={{ margin: "0 0 10px", fontSize: 15, letterSpacing: 0.2, color: "#ffcf57" }}>Résumé par joueur</h3>
+      <h3 style={{ margin: "0 0 8px", fontSize: 15, letterSpacing: 0.2, color: "#ffcf57" }}>
+        {title}
+      </h3>
+      {children}
+    </Panel>
+  );
+}
 
-      {/* Table compactée */}
-      <div
+function Table({
+  headers,
+  rows,
+}: {
+  headers: (string | React.ReactNode)[];
+  rows: (Array<string | number | React.ReactNode>)[];
+}) {
+  return (
+    <div
+      style={{
+        overflowX: "auto",
+        border: "1px solid rgba(255,255,255,.08)",
+        borderRadius: 12,
+      }}
+    >
+      <table
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr auto auto auto auto",
-          gap: 6,
+          width: "100%",
+          borderCollapse: "separate",
+          borderSpacing: 0,
           fontSize: 12.5,
-          lineHeight: 1.2,
-          alignItems: "center",
         }}
       >
-        <HeadCell>Joueur</HeadCell>
-        <HeadCell>Moy/3D</HeadCell>
-        <HeadCell>Best visit</HeadCell>
-        <HeadCell>Best CO</HeadCell>
-        <HeadCell>Darts</HeadCell>
-
-        {Object.keys(summary.players).map((pid) => {
-          const p = summary.players[pid];
-          const bestCO = sanitizeCheckout(p.bestCheckoutScore ?? p.highestCheckout ?? p.bestCheckout);
-          const ex = extras[pid] || ({} as Extras);
-
-          return (
-            <React.Fragment key={pid}>
-              <Cell style={{ textAlign: "left", color: p.win ? "#7fe2a9" : "#e8e8ec" }}>
-                {p.name || "—"}{p.win ? " (win)" : ""}
-              </Cell>
-              <Cell>{to2(p.avg3)}</Cell>
-              <Cell>{i0(p.bestVisit)}</Cell>
-              <Cell>{i0(bestCO)}</Cell>
-              <Cell>{i0(p.darts)}</Cell>
-
-              {/* Chips Hits (ligne 1) */}
-              <div style={{ gridColumn: "1 / -1", margin: "2px 0 2px" }}>
-                <ChipsRow items={[
-                  ["180", ex.t180 || 0],
-                  ["140+", ex.t140 || 0],
-                  ["100+", ex.t100 || 0],
-                  ["60+", ex.t60 || 0],
-                ]}/>
-              </div>
-
-              {/* Chips Impacts + volumes (ligne 2) */}
-              <div style={{ gridColumn: "1 / -1", margin: "0 0 6px" }}>
-                <ChipsRow items={[
-                  ["Doubles", ex.doubles || 0],
-                  ["Triples", ex.triples || 0],
-                  ["Bulls", ex.bulls || 0],
-                  ["Visits", ex.visits || 0],
-                  ["Points", ex.points || 0],
-                  ["CO%", ex.coPct || 0],
-                  ["CO", ex.coHits || 0],       // hits
-                  ["Att.", ex.coAtt || 0],      // attempts
-                ]}/>
-              </div>
-            </React.Fragment>
-          );
-        })}
-      </div>
-    </Panel>
+        <thead>
+          <tr>
+            {headers.map((h, i) => (
+              <th
+                key={i}
+                style={{
+                  textAlign: i === 0 ? "left" : "right",
+                  padding: "8px 10px",
+                  color: "#ffcf57",
+                  fontWeight: 800,
+                  background: "rgba(255,255,255,.04)",
+                  position: "sticky",
+                  top: 0,
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, ri) => (
+            <tr key={ri} style={{ borderTop: "1px solid rgba(255,255,255,.05)" }}>
+              {r.map((c, ci) => (
+                <td
+                  key={ci}
+                  style={{
+                    textAlign: ci === 0 ? "left" : "right",
+                    padding: "6px 10px",
+                    color: "#e8e8ec",
+                    whiteSpace: "nowrap",
+                    fontVariantNumeric: "tabular-nums",
+                    borderTop: ri === 0 ? "none" : "1px solid rgba(255,255,255,.05)",
+                  }}
+                >
+                  {c}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 /* ================== Shell & styles ================== */
 function Shell({ go, title, children, canResume, resumeId }: any) {
   return (
-    <div style={{ padding: 16, maxWidth: 620, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 640, margin: "0 auto" }}>
       <button onClick={() => go("stats", { tab: "history" })} style={btn()}>← Retour</button>
       <h2 style={{ margin: "12px 0 10px", letterSpacing: 0.3 }}>{title || "Fin de partie"}</h2>
       {children}
@@ -349,7 +472,6 @@ function Panel({ children, style }: { children: React.ReactNode; style?: React.C
   );
 }
 
-// Petit encart informatif
 function InfoCard({ children }: { children: React.ReactNode }) {
   return (
     <Panel style={{ color: "#bbb", padding: 10, margin: "8px 0" }}>
@@ -364,42 +486,6 @@ function Notice({ children }: { children: React.ReactNode }) {
       <div style={{ color: "#bbb" }}>{children}</div>
     </Panel>
   );
-}
-
-function ChipsRow({ items }: { items: [string, number][] }) {
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {items.map(([label, val]) => (
-        <div
-          key={label}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            height: 26,
-            padding: "0 10px",
-            borderRadius: 999,
-            border: "1px solid rgba(255,255,255,.08)",
-            background: "rgba(255,255,255,.06)",
-            fontSize: 12,
-            fontWeight: 800,
-            letterSpacing: 0.2,
-            color: "#e8e8ec",
-          }}
-        >
-          <span style={{ color: "#ffcf57" }}>{label}</span>
-          <span style={{ fontVariantNumeric: "tabular-nums" }}>{i0(val)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function HeadCell({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontWeight: 800, color: "#ffcf57", padding: "3px 0" }}>{children}</div>;
-}
-function Cell({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return <div style={{ padding: "2px 0", color: "#e8e8ec", textAlign: "right", fontVariantNumeric: "tabular-nums", ...style }}>{children}</div>;
 }
 
 /* ================== Icons ================== */
@@ -428,6 +514,9 @@ function sanitizeCheckout(v: any): number {
   if (r >= 2 && r <= 170) return r;
   return 0;
 }
+function nameCell(m: PlayerMetrics) {
+  return <span style={{ fontWeight: 800, color: "#ffcf57" }}>{m.name}{/* (win handled in header) */}</span>;
+}
 function btn(): React.CSSProperties {
   return { borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "#e8e8ec", fontWeight: 700, cursor: "pointer" };
 }
@@ -435,18 +524,21 @@ function btnGold(): React.CSSProperties {
   return { borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,180,0,.3)", background: "linear-gradient(180deg,#ffc63a,#ffaf00)", color: "#141417", fontWeight: 900, cursor: "pointer", boxShadow: "0 10px 22px rgba(255,170,0,.28)" };
 }
 function num(x: any, d = 0) { const n = Number(x); return Number.isFinite(n) ? n : d; }
-function to2(x: any) { const v = Number(x); return Number.isFinite(v) ? v.toFixed(2) : "0.00"; }
-function i0(x: any) { const n = Number(x); return Number.isFinite(n) ? (n | 0) : 0; }
+function n2(x: any) { const v = Number(x); return Number.isFinite(v) ? v.toFixed(2) : "0.00"; }
+function n0(x: any) { const n = Number(x); return Number.isFinite(n) ? (n | 0) : 0; }
+function pct(x?: number) { const v = Number(x); return Number.isFinite(v) ? `${Math.round(Math.max(0, Math.min(100, v)))}%` : "—"; }
 function pick(obj: any, paths: string[], def?: any) {
   for (const p of paths) {
-    const segs = p.split(".");
-    let cur = obj;
-    let ok = true;
-    for (const s of segs) {
-      if (cur == null) { ok = false; break; }
-      if (s in cur) cur = cur[s]; else { ok = false; break; }
-    }
-    if (ok) return cur;
+    try {
+      const segs = p.split(".");
+      let cur = obj;
+      let ok = true;
+      for (const s of segs) {
+        if (cur == null) { ok = false; break; }
+        if (s in cur) cur = cur[s]; else { ok = false; break; }
+      }
+      if (ok) return cur;
+    } catch {}
   }
   return def;
 }
