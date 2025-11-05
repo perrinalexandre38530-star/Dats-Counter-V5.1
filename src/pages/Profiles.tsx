@@ -7,6 +7,7 @@
 // - [RESPONSIVE] Avatar centré au-dessus du nom sur mobile
 // - [RESPONSIVE] Mini-stats incassables : auto-fit/minmax + clamp()
 // - [NEW] Ring d’étoiles EXTERNE (outside) autour du médaillon
+// - [NEW] Bouton “Créer / Mettre à jour l’avatar” -> go("avatar")
 // ============================================
 
 import React from "react";
@@ -23,11 +24,14 @@ export default function Profiles({
   update,
   setProfiles,
   autoCreate = false,
+  // ✅ Optionnel: si fourni, permettra d’ouvrir le créateur d’avatar
+  go,
 }: {
   store: Store;
   update: (mut: (s: Store) => Store) => void;
   setProfiles: (fn: (p: Profile[]) => Profile[]) => void;
   autoCreate?: boolean;
+  go?: (tab: any, params?: any) => void;
 }) {
   const {
     profiles = [],
@@ -113,6 +117,11 @@ export default function Profiles({
   const activeAvg3D =
     active?.id ? (statsMap[active.id]?.avg3d ?? (statsMap[active.id] as any)?.avg3 ?? null) : null;
 
+  // ✅ Helper navigation avatar (optionnelle)
+  const openAvatarCreator = React.useCallback(() => {
+    go?.("avatar");
+  }, [go]);
+
   return (
     <>
       <style
@@ -148,6 +157,8 @@ export default function Profiles({
                 if (n && n !== active.name) renameProfile(active.id, n);
                 if (f) changeAvatar(active.id, f);
               }}
+              // ✅ nouveau: ouvre le créateur d’avatar
+              onOpenAvatarCreator={openAvatarCreator}
             />
           ) : (
             <UnifiedAuthBlock
@@ -184,6 +195,8 @@ export default function Profiles({
               onDelete={delProfile}
               statsMap={statsMap}
               warmup={(id) => warmProfileStats(id, setStatsMap)}
+              // ✅ pass navigation aux items locaux aussi
+              onOpenAvatarCreator={openAvatarCreator}
             />
           </div>
         </Card>
@@ -215,6 +228,7 @@ function ActiveProfileBlock({
   onToggleAway,
   onQuit,
   onEdit,
+  onOpenAvatarCreator, // ✅
 }: {
   active: Profile;
   activeAvg3D: number | null;
@@ -222,6 +236,7 @@ function ActiveProfileBlock({
   onToggleAway: () => void;
   onQuit: () => void;
   onEdit: (name: string, avatar?: File | null) => void;
+  onOpenAvatarCreator?: () => void; // ✅ optionnel
 }) {
   const AVATAR = 96;
   const BORDER = 8;
@@ -326,6 +341,21 @@ function ActiveProfileBlock({
 
         <div className="row apb__actions" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <EditInline initialName={active?.name || ""} onSave={onEdit} compact />
+
+          {/* ✅ Nouveau bouton “Créer / Mettre à jour l’avatar” */}
+          <button
+            className="btn sm"
+            onClick={() => onOpenAvatarCreator?.()}
+            title="Ouvrir le créateur d’avatar"
+            style={{
+              background: "linear-gradient(180deg,#ffc63a,#ffaf00)",
+              color: "#000",
+              fontWeight: 800,
+            }}
+          >
+            Créer / Mettre à jour l’avatar
+          </button>
+
           <button className="btn sm" onClick={onToggleAway} title="Basculer le statut">
             {selfStatus === "away" ? "EN LIGNE" : "ABSENT"}
           </button>
@@ -657,6 +687,7 @@ function LocalProfiles({
   onDelete,
   statsMap,
   warmup,
+  onOpenAvatarCreator, // ✅
 }: {
   profiles: Profile[];
   onRename: (id: string, name: string) => void;
@@ -664,6 +695,7 @@ function LocalProfiles({
   onDelete: (id: string) => void;
   statsMap: Record<string, BasicProfileStats | undefined>;
   warmup: (id: string) => void;
+  onOpenAvatarCreator?: () => void; // ✅ optionnel
 }) {
   const [editing, setEditing] = React.useState<string | null>(null);
   const [tmpName, setTmpName] = React.useState<string>("");
@@ -778,9 +810,23 @@ function LocalProfiles({
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "flex-end",
-                minWidth: 96,
+                minWidth: 122,
               }}
             >
+              {/* ✅ Bouton Avatar Creator (toujours visible) */}
+              <button
+                className="btn sm"
+                onClick={() => onOpenAvatarCreator?.()}
+                title="Ouvrir le créateur d’avatar"
+                style={{
+                  background: "linear-gradient(180deg,#ffc63a,#ffaf00)",
+                  color: "#000",
+                  fontWeight: 800,
+                }}
+              >
+                Créer avatar
+              </button>
+
               {isEdit ? (
                 <>
                   <button className="btn ok sm" onClick={() => saveEdit(p.id)}>
@@ -875,7 +921,7 @@ function EditInline({
         )}
       </label>
 
-      <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ width: compact ? 160 : 200 }} />
+      <input className="input" value={name} onChange={(e) => setName(e.target.value)} style={{ width: (compact ? 160 : 200) }} />
 
       <button
         className="btn ok sm"

@@ -1,8 +1,9 @@
 // ============================================
 // src/pages/X01End.tsx — Fin de partie stylée (LEG/MATCH)
 // - Bouton "Reprendre" masqué si partie terminée
-// - Table compacte + stats bonus (180 / 140+ / 100+ / 60+)
-// - Sanitize Best CO pour éviter les valeurs absurdes
+// - Table compacte + stats bonus : 180 / 140+ / 100+ / 60+
+//   + Doubles / Triples / Bulls + Visits / Points + Checkout%
+// - Lecture robuste (summary -> legStats -> legacy payload)
 // ============================================
 import React from "react";
 import { History } from "../lib/history";
@@ -72,16 +73,16 @@ export default function X01End({ go, params }: Props) {
   const winnerName =
     (winnerId && (players.find((p) => p.id === winnerId)?.name || null)) || null;
 
-  // 1) summary de match (playerStats.ts) si présent
+  // 1) summary normalisé (playerStats.ts)
   const matchSummary = rec.summary && rec.summary.kind === "x01" ? rec.summary : null;
 
-  // 2) sinon, tente de construire un résumé à partir d'un LEG
+  // 2) fallback depuis __legStats ou legacy
   const legSummary = !matchSummary ? buildSummaryFromLeg(rec) : null;
 
   const title = (rec?.kind === "x01" || rec?.kind === "leg" ? "LEG" : String(rec?.kind || "Fin").toUpperCase()) + " — " + dateStr;
 
-  // mapping "extras" (buckets) pour affichage chips
-  const extrasByPlayer: Record<string, { t180: number; t140: number; t100: number; t60: number }> =
+  // Extras (buckets + impacts doubles/triples/bulls + visits/points/checkout)
+  const extrasByPlayer: Record<string, Extras> =
     extractExtras(rec, matchSummary || legSummary);
 
   return (
@@ -120,7 +121,7 @@ export default function X01End({ go, params }: Props) {
 
 /* ============ Reconstruction LEG → summary x01-like ============ */
 function buildSummaryFromLeg(rec: any) {
-  const leg = rec?.payload?.__legStats || rec?.__legStats;     // stats riches si présentes
+  const leg = rec?.payload?.__legStats || rec?.__legStats;
   const per = leg?.perPlayer;
   const list = leg?.players;
 
@@ -133,7 +134,6 @@ function buildSummaryFromLeg(rec: any) {
       const visits = num(s.visits);
       const points = num(s.pointsScored, (num(s.avg3) / 3) * (darts || visits * 3));
 
-      // Sanitize best checkout
       const rawCO = s.bestCheckoutScore ?? s.highestCheckout ?? s.bestCheckout;
       const bestCO = sanitizeCheckout(rawCO);
 
@@ -183,25 +183,70 @@ function buildSummaryFromLeg(rec: any) {
   return null;
 }
 
-/* ================== Extras (buckets) ================== */
-function extractExtras(rec: any, summary: any | null) {
-  const out: Record<string, { t180: number; t140: number; t100: number; t60: number }> = {};
+/* ================== Extras (buckets & impacts) ================== */
+type Extras = {
+  t180: number; t140: number; t100: number; t60: number;
+  doubles: number; triples: number; bulls: number;
+  visits: number; points: number;
+  coHits: number; coAtt: number; coPct: number;
+};
+
+function extractExtras(rec: any, summary: any | null): Record<string, Extras> {
+  const out: Record<string, Extras> = {};
+  const per = rec?.payload?.__legStats?.perPlayer || rec?.__legStats?.perPlayer || {};
   const players = Object.keys(summary?.players || {});
   for (const pid of players) {
-    const p = summary.players[pid] || {};
-    const b = p.buckets || {};
-    out[pid] = {
-      t180: num(b["180"], pick(rec, ["payload.h180."+pid, "h180."+pid], 0)),
-      t140: num(b["140+"], pick(rec, ["payload.h140."+pid, "h140."+pid], 0)),
-      t100: num(b["100+"], pick(rec, ["payload.h100."+pid, "h100."+pid], 0)),
-      t60:  num(b["60+"],  pick(rec, ["payload.h60."+pid,  "h60."+pid], 0)),
-    };
+    const s = summary?.players?.[pid] || {};
+    const pRich = per?.[pid] || {};
+
+    const buckets = s.buckets || {};
+    const t180 = num(buckets["180"], pick(rec, ["payload.h180."+pid, "h180."+pid], 0));
+    const t140 = num(buckets["140+"], pick(rec, ["payload.h140."+pid, "h140."+pid], 0));
+    const t100 = num(buckets["100+"], pick(rec, ["payload.h100."+pid, "h100."+pid], 0));
+    const t60  = num(buckets["60+"],  pick(rec, ["payload.h60."+pid,  "h60."+pid], 0));
+
+    // impacts
+    const doubles = num(
+      pRich.doubles,
+      pick(rec, ["payload.doubles."+pid, "doubles."+pid], 0)
+    );
+    const triples = num(
+      pRich.triples,
+      pick(rec, ["payload.triples."+pid, "triples."+pid], 0)
+    );
+    const bulls = num(
+      pRich.bulls,
+      pick(rec, ["payload.bulls."+pid, "bulls."+pid], 0)
+    );
+
+    // visites / points
+    const visits = num(
+      pRich.visits ?? s._sumVisits,
+      pick(rec, ["payload.visits."+pid, "visits."+pid], 0)
+    );
+    const points = num(
+      pRich.pointsScored ?? s._sumPoints,
+      pick(rec, ["payload.pointsScored."+pid, "pointsScored."+pid], 0)
+    );
+
+    // checkout
+    const coHits = num(
+      pRich.checkoutHits,
+      pick(rec, ["payload.checkoutHits."+pid, "checkoutHits."+pid], 0)
+    );
+    const coAtt = num(
+      pRich.checkoutAttempts,
+      pick(rec, ["payload.checkoutAttempts."+pid, "checkoutAttempts."+pid], 0)
+    );
+    const coPct = coAtt > 0 ? Math.round((coHits / coAtt) * 100) : 0;
+
+    out[pid] = { t180, t140, t100, t60, doubles, triples, bulls, visits, points, coHits, coAtt, coPct };
   }
   return out;
 }
 
 /* ================== UI — Table compacte ================== */
-function StatsTable({ summary, extras }: { summary: any; extras: Record<string, { t180: number; t140: number; t100: number; t60: number }>}) {
+function StatsTable({ summary, extras }: { summary: any; extras: Record<string, Extras>}) {
   return (
     <Panel style={{ padding: 12 }}>
       <h3 style={{ margin: "0 0 10px", fontSize: 15, letterSpacing: 0.2, color: "#ffcf57" }}>Résumé par joueur</h3>
@@ -226,6 +271,7 @@ function StatsTable({ summary, extras }: { summary: any; extras: Record<string, 
         {Object.keys(summary.players).map((pid) => {
           const p = summary.players[pid];
           const bestCO = sanitizeCheckout(p.bestCheckoutScore ?? p.highestCheckout ?? p.bestCheckout);
+          const ex = extras[pid] || ({} as Extras);
 
           return (
             <React.Fragment key={pid}>
@@ -237,13 +283,27 @@ function StatsTable({ summary, extras }: { summary: any; extras: Record<string, 
               <Cell>{i0(bestCO)}</Cell>
               <Cell>{i0(p.darts)}</Cell>
 
-              {/* Ligne chips extras (sous toute la ligne) */}
-              <div style={{ gridColumn: "1 / -1", margin: "2px 0 6px" }}>
+              {/* Chips Hits (ligne 1) */}
+              <div style={{ gridColumn: "1 / -1", margin: "2px 0 2px" }}>
                 <ChipsRow items={[
-                  ["180", extras[pid]?.t180 || 0],
-                  ["140+", extras[pid]?.t140 || 0],
-                  ["100+", extras[pid]?.t100 || 0],
-                  ["60+", extras[pid]?.t60 || 0],
+                  ["180", ex.t180 || 0],
+                  ["140+", ex.t140 || 0],
+                  ["100+", ex.t100 || 0],
+                  ["60+", ex.t60 || 0],
+                ]}/>
+              </div>
+
+              {/* Chips Impacts + volumes (ligne 2) */}
+              <div style={{ gridColumn: "1 / -1", margin: "0 0 6px" }}>
+                <ChipsRow items={[
+                  ["Doubles", ex.doubles || 0],
+                  ["Triples", ex.triples || 0],
+                  ["Bulls", ex.bulls || 0],
+                  ["Visits", ex.visits || 0],
+                  ["Points", ex.points || 0],
+                  ["CO%", ex.coPct || 0],
+                  ["CO", ex.coHits || 0],       // hits
+                  ["Att.", ex.coAtt || 0],      // attempts
                 ]}/>
               </div>
             </React.Fragment>
@@ -289,7 +349,7 @@ function Panel({ children, style }: { children: React.ReactNode; style?: React.C
   );
 }
 
-// ✅ Manquant précédemment : petit encart informatif
+// Petit encart informatif
 function InfoCard({ children }: { children: React.ReactNode }) {
   return (
     <Panel style={{ color: "#bbb", padding: 10, margin: "8px 0" }}>
@@ -328,7 +388,7 @@ function ChipsRow({ items }: { items: [string, number][] }) {
           }}
         >
           <span style={{ color: "#ffcf57" }}>{label}</span>
-          <span>{i0(val)}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{i0(val)}</span>
         </div>
       ))}
     </div>
@@ -360,16 +420,14 @@ function normalizeStatus(rec: any): "finished" | "in_progress" {
   if (sum?.finished === true || sum?.result?.finished === true) return "finished";
   return "in_progress";
 }
-
 function sanitizeCheckout(v: any): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
   const r = Math.round(n);
-  if (r === 50) return 50;           // DBULL
-  if (r >= 2 && r <= 170) return r;  // plage plausible des checkouts
+  if (r === 50) return 50;
+  if (r >= 2 && r <= 170) return r;
   return 0;
 }
-
 function btn(): React.CSSProperties {
   return { borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "#e8e8ec", fontWeight: 700, cursor: "pointer" };
 }
