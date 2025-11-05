@@ -1,5 +1,6 @@
 // ============================================
 // src/pages/X01End.tsx — Fin de partie robuste (MATCH ou LEG)
+// (sanitise Best CO pour éviter les valeurs absurdes)
 // ============================================
 import React from "react";
 import { History } from "../lib/history";
@@ -72,8 +73,12 @@ export default function X01End({ go, params }: Props) {
   // 2) sinon, tente de construire un résumé à partir d'un LEG
   const legSummary = !matchSummary ? buildSummaryFromLeg(rec) : null;
 
+  const title = rec?.kind === "x01" || rec?.kind === "leg"
+    ? "LEG"
+    : String((rec?.kind || "Fin")).toUpperCase();
+
   return (
-    <Shell go={go} title={`${String(rec.kind || "MATCH").toUpperCase()} — ${dateStr}`} resumeId={params?.resumeId}>
+    <Shell go={go} title={`${title} — ${dateStr}`} resumeId={params?.resumeId}>
       <div style={{ opacity: 0.85, marginBottom: 10 }}>
         Joueurs : {players.map((p) => p?.name || "—").join(" · ") || "—"}
       </div>
@@ -120,12 +125,16 @@ function buildSummaryFromLeg(rec: any) {
       const visits = num(s.visits);
       const points = num(s.pointsScored, (num(s.avg3) / 3) * (darts || visits * 3));
 
+      // ⛑️ sanitize Best CO dès la reconstruction
+      const rawCO = s.bestCheckoutScore ?? s.highestCheckout ?? s.bestCheckout;
+      const bestCO = sanitizeCheckout(rawCO);
+
       players[p.id] = {
         id: p.id,
         name: p.name || "—",
         avg3: num(s.avg3),
         bestVisit: num(s.bestVisit),
-        bestCheckout: num(s.highestCheckout ?? s.bestCheckout),
+        bestCheckout: bestCO,
         darts: darts || (visits ? visits * 3 : 0),
         win: !!s.win || (rec?.winnerId ? rec.winnerId === p.id : false),
         buckets: s.buckets && Object.keys(s.buckets).length ? s.buckets : undefined,
@@ -154,7 +163,9 @@ function buildSummaryFromLeg(rec: any) {
     const get = (id: string) => ({
       avg3: pick(rec, ["payload.avg3."+id, "avg3."+id]),
       bestVisit: pick(rec, ["payload.bestVisit."+id, "bestVisit."+id]),
-      bestCheckout: pick(rec, ["payload.bestCheckout."+id, "bestCheckout."+id]),
+      bestCheckout: sanitizeCheckout(
+        pick(rec, ["payload.bestCheckout."+id, "bestCheckout."+id])
+      ),
       darts: pick(rec, ["payload.darts."+id, "darts."+id]),
       visits: pick(rec, ["payload.visits."+id, "visits."+id]),
       buckets: undefined,
@@ -166,6 +177,9 @@ function buildSummaryFromLeg(rec: any) {
 
 /* ======= UI bits ======= */
 function SummaryTable({ summary }: { summary: any }) {
+  const bestCO = (p: any) =>
+    sanitizeCheckout(p.bestCheckoutScore ?? p.highestCheckout ?? p.bestCheckout);
+
   return (
     <div style={card()}>
       <h3 style={{ marginTop: 0 }}>Résumé par joueur</h3>
@@ -179,10 +193,12 @@ function SummaryTable({ summary }: { summary: any }) {
           const p = summary.players[pid];
           return (
             <React.Fragment key={pid}>
-              <div style={td(p.win ? "#7fe2a9" : undefined)}>{p.name || "—"}{p.win ? " (win)" : ""}</div>
-              <div style={td()}>{fix(p.avg3)}</div>
+              <div style={td(p.win ? "#7fe2a9" : undefined)}>
+                {p.name || "—"}{p.win ? " (win)" : ""}
+              </div>
+              <div style={td()}>{to2(p.avg3)}</div>
               <div style={td()}>{fix(p.bestVisit, 0)}</div>
-              <div style={td()}>{fix(p.bestCheckout, 0)}</div>
+              <div style={td()}>{fix(bestCO(p), 0)}</div>
               <div style={td()}>{fix(p.darts, 0)}</div>
             </React.Fragment>
           );
@@ -214,6 +230,17 @@ function Shell({ go, title, children, resumeId }: any) {
   );
 }
 
+/* ===== Helpers & styles ===== */
+function sanitizeCheckout(v: any): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  const r = Math.round(n);
+  // Domaines plausibles (sorties): 2..170 (ex: T20 T20 D25) + 50 (DBULL).
+  if (r === 50) return 50;
+  if (r >= 2 && r <= 170) return r;
+  return 0; // on jette les valeurs absurdes (ex: concat de chiffres)
+}
+
 function btn(): React.CSSProperties {
   return { borderRadius: 10, padding: "6px 12px", border: "1px solid rgba(255,255,255,.12)", background: "transparent", color: "#e8e8ec", fontWeight: 700, cursor: "pointer" };
 }
@@ -224,8 +251,10 @@ function card(): React.CSSProperties {
   return { padding: 12, borderRadius: 12, border: "1px solid rgba(255,255,255,.08)", background: "linear-gradient(180deg, rgba(22,22,26,.96), rgba(14,14,16,.98))" };
 }
 function th(): React.CSSProperties { return { fontWeight: 800, color: "#ffcf57", padding: "4px 0" }; }
-function td(color?: string): React.CSSProperties { return { padding: "2px 0", color: color || "#e8e8ec" }; }
+function td(color?: string): React.CSSProperties { return { padding: "2px 0", color: color || "#e8e8ec", textAlign: "right", fontVariantNumeric: "tabular-nums" }; }
+
 function num(x: any, d = Date.now()) { const n = Number(x); return Number.isFinite(n) ? n : d; }
+function to2(x: any) { const v = Number(x); return Number.isFinite(v) ? v.toFixed(2) : "0.00"; }
 function fix(x: any, d = 0) { const n = Number(x); if (!Number.isFinite(n)) return String(d); return Math.abs(n) < 1000 && n !== (n | 0) ? n.toFixed(2) : String(n | 0); }
 function pick(obj: any, paths: string[]) {
   for (const p of paths) {
@@ -234,8 +263,6 @@ function pick(obj: any, paths: string[]) {
     let ok = true;
     for (const s of segs) {
       if (cur == null) { ok = false; break; }
-      if (s.includes("+")) { ok = false; break; }
-      if (s.includes("[")) { ok = false; break; }
       if (s in cur) cur = cur[s]; else { ok = false; break; }
     }
     if (ok) return cur;
