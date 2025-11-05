@@ -5,26 +5,21 @@
 // - Recadrage/zoom + déplacement dans un cercle
 // - Effets : Posterize (palettes), Netteté, Contours (Sobel), Lissage
 // - Export PNG 512x512 (avatar seul transparence) + version médaillon
-// - Pas de dépendances externes
-// - Tailwind-friendly, mais fonctionne sans Tailwind
+// - AUCUNE dépendance externe (React + canvas)
 // ============================================
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 /* -------------------------------------------------
-   Types / outils
+   Utils
 ------------------------------------------------- */
 function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
-
-// Quantification simple par paliers (posterize)
 function quantizeChannel(x: number, steps: number) {
   const s = Math.max(2, steps);
   const r = Math.floor((x / 255) * (s - 1));
   return Math.round((r / (s - 1)) * 255);
 }
-
-// Convolution générique (mono passe, noyau carré impaire)
 function convolve(src: Uint8ClampedArray, w: number, h: number, kernel: number[], ksize: number) {
   const half = (ksize - 1) >> 1;
   const out = new Uint8ClampedArray(src.length);
@@ -52,7 +47,6 @@ function convolve(src: Uint8ClampedArray, w: number, h: number, kernel: number[]
   }
   return out;
 }
-
 function makeGaussianKernel(size: number, sigma: number) {
   const k = new Array(size * size);
   const half = (size - 1) / 2;
@@ -68,8 +62,6 @@ function makeGaussianKernel(size: number, sigma: number) {
   for (let i = 0; i < k.length; i++) k[i] /= sum;
   return k;
 }
-
-// Détection de contours (Sobel) -> intensité 0..255
 function sobel(src: Uint8ClampedArray, w: number, h: number) {
   const gray = new Uint8ClampedArray(w * h);
   for (let i = 0, j = 0; i < src.length; i += 4, j++) {
@@ -92,39 +84,32 @@ function sobel(src: Uint8ClampedArray, w: number, h: number) {
         }
       }
       const m = Math.sqrt(sx * sx + sy * sy);
-      mag[y * w + x] = clamp(Math.round((m / 1448) * 255), 0, 255); // 1448 ~ max sobel 8bit
+      mag[y * w + x] = clamp(Math.round((m / 1448) * 255), 0, 255);
     }
   }
   return mag;
 }
-
-// Applique un style "cartoon": lissage doux -> posterize -> contours
 function applyCartoonish(imgData: ImageData, opts: {
-  blur: number; // 0..3
-  posterizeSteps: number; // 3..12
-  edgeStrength: number; // 0..2
-  edgeThreshold: number; // 0..255
-  sharpen: number; // 0..2
+  blur: number;
+  posterizeSteps: number;
+  edgeStrength: number;
+  edgeThreshold: number;
+  sharpen: number;
 }) {
   const { width: w, height: h } = imgData;
-  let data = new Uint8ClampedArray(imgData.data); // copie
+  let data = new Uint8ClampedArray(imgData.data);
 
-  // 1) Lissage gaussien léger (pour éviter le bruit avant quantification)
   if (opts.blur > 0) {
-    const size = 3 + 2 * Math.round(opts.blur); // 3,5,7
+    const size = 3 + 2 * Math.round(opts.blur);
     const sigma = 0.8 + 0.6 * opts.blur;
     const kernel = makeGaussianKernel(size, sigma);
     data = convolve(data, w, h, kernel, size);
   }
-
-  // 2) Posterize (quantification des couleurs)
   for (let i = 0; i < data.length; i += 4) {
     data[i + 0] = quantizeChannel(data[i + 0], opts.posterizeSteps);
     data[i + 1] = quantizeChannel(data[i + 1], opts.posterizeSteps);
     data[i + 2] = quantizeChannel(data[i + 2], opts.posterizeSteps);
   }
-
-  // 3) Légère netteté (unsharp mask simple)
   if (opts.sharpen > 0) {
     const blurK = makeGaussianKernel(3, 0.8);
     const blurred = convolve(data, w, h, blurK, 3);
@@ -134,22 +119,19 @@ function applyCartoonish(imgData: ImageData, opts: {
       data[i + 2] = clamp(data[i + 2] + (data[i + 2] - blurred[i + 2]) * opts.sharpen, 0, 255);
     }
   }
-
-  // 4) Contours noirs via Sobel
   const edges = sobel(data, w, h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const e = edges[y * w + x];
       if (e >= opts.edgeThreshold) {
         const o = (y * w + x) * 4;
-        const k = lerp(0, 1, opts.edgeStrength); // 0..1
-        data[o + 0] = data[o + 0] * (1 - k); // tire vers noir
+        const k = lerp(0, 1, opts.edgeStrength);
+        data[o + 0] = data[o + 0] * (1 - k);
         data[o + 1] = data[o + 1] * (1 - k);
         data[o + 2] = data[o + 2] * (1 - k);
       }
     }
   }
-
   return new ImageData(data, w, h);
 }
 
@@ -158,7 +140,7 @@ function applyCartoonish(imgData: ImageData, opts: {
 ------------------------------------------------- */
 export default function AvatarCreator({
   size = 512,
-  overlaySrc = "/assets/medallion.svg", // Médaillon existant (PNG/SVG transparent). Remplacez le chemin.
+  overlaySrc = "/assets/medallion.svg",
   onExport,
 }: {
   size?: number;
@@ -179,37 +161,54 @@ export default function AvatarCreator({
   const [edgeThreshold, setEdgeThreshold] = useState(120);
   const [sharpen, setSharpen] = useState(0.6);
 
-  // Canvas refs
+  // Canvas & overlay
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLImageElement | null>(null);
 
-  // Charge l'overlay (médaillon)
+  // Charge overlay
   useEffect(() => {
     const o = new Image();
     o.crossOrigin = "anonymous";
+    o.onload = () => { overlayRef.current = o; render(); };
+    o.onerror = () => { overlayRef.current = null; render(); };
     o.src = overlaySrc;
-    overlayRef.current = o;
-  }, [overlaySrc]);
+  }, [overlaySrc]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Dessin principal dans le canvas (avatar seul, masqué en cercle)
+  // Re-rendu quand l'image source finit de charger
+  useEffect(() => {
+    if (!img) return;
+    if (img.complete && img.naturalWidth > 0) {
+      render();
+      return;
+    }
+    const onLoad = () => render();
+    const onErr = () => render();
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onErr);
+    return () => {
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onErr);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img]);
+
+  // ----- Rendu sécurisé -----
   const render = React.useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Efface
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Fond transparent + masque circulaire
+    // Masque circulaire
     ctx.save();
     ctx.beginPath();
     ctx.arc(canvas.width / 2, canvas.height / 2, canvas.width / 2 - 2, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
 
-    if (img) {
-      // Calcul placement image (zoom + pan)
+    if (img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
       const iw = img.naturalWidth;
       const ih = img.naturalHeight;
       const s = zoom * (size / Math.min(iw, ih));
@@ -218,22 +217,27 @@ export default function AvatarCreator({
       const dx = (size - dw) / 2 + offset.x;
       const dy = (size - dh) / 2 + offset.y;
 
-      // Dessine l'image source dans un canvas temporaire pour post-traitement
       const tmp = document.createElement("canvas");
       tmp.width = size; tmp.height = size;
       const tctx = tmp.getContext("2d")!;
       tctx.clearRect(0, 0, size, size);
-      tctx.drawImage(img, dx, dy, dw, dh);
 
-      // Récupère pixels + applique style cartoon
-      const id = tctx.getImageData(0, 0, size, size);
-      const cartoon = applyCartoonish(id, {
-        blur, posterizeSteps: posterize, edgeStrength, edgeThreshold, sharpen,
-      });
-
-      ctx.putImageData(cartoon, 0, 0);
+      try {
+        tctx.drawImage(img, dx, dy, dw, dh);
+        const id = tctx.getImageData(0, 0, size, size);
+        const cartoon = applyCartoonish(id, {
+          blur,
+          posterizeSteps: posterize,
+          edgeStrength,
+          edgeThreshold,
+          sharpen,
+        });
+        ctx.putImageData(cartoon, 0, 0);
+      } catch (e) {
+        console.warn("[AvatarCreator] drawImage error:", e);
+      }
     } else {
-      // Placeholder quadrillage gris clair
+      // Placeholder quadrillage
       ctx.fillStyle = "#e5e7eb";
       ctx.fillRect(0, 0, size, size);
       ctx.strokeStyle = "#d1d5db";
@@ -251,7 +255,7 @@ export default function AvatarCreator({
 
   useEffect(() => { render(); }, [render]);
 
-  // Drag & drop / input file
+  // ----- Upload -----
   function handleFiles(files: FileList | null) {
     if (!files || !files[0]) return;
     const f = files[0];
@@ -259,12 +263,13 @@ export default function AvatarCreator({
     reader.onload = () => {
       const i = new Image();
       i.onload = () => setImg(i);
+      i.onerror = () => setImg(null);
       i.src = String(reader.result);
     };
     reader.readAsDataURL(f);
   }
 
-  // Panning à la souris / touch
+  // ----- Gestes -----
   function onPointerDown(e: React.PointerEvent) {
     setIsPanning(true);
     panRef.current = { x: e.clientX - offset.x, y: e.clientY - offset.y };
@@ -278,55 +283,53 @@ export default function AvatarCreator({
     setIsPanning(false);
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   }
-
-  // Molette = zoom
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     const delta = -Math.sign(e.deltaY) * 0.05;
-    setZoom(z => clamp(z + delta, 0.5, 4));
+    setZoom((z) => clamp(z + delta, 0.5, 4));
   }
 
-  // Export : avatar seul (png transparent) + avec médaillon
+  // ----- Export -----
   function exportPngs() {
-    const canvas = canvasRef.current!;
-
-    // 1) Avatar seul (déjà rendu avec masque). On recrée une toile propre.
+    const src = canvasRef.current!;
+    // 1) Avatar seul (déjà masqué)
     const a = document.createElement("canvas");
     a.width = size; a.height = size;
     const actx = a.getContext("2d")!;
-    // Re-rendu pour éviter tracés en dehors du masque
     actx.save();
     actx.beginPath();
     actx.arc(a.width / 2, a.height / 2, a.width / 2 - 2, 0, Math.PI * 2);
     actx.closePath();
     actx.clip();
-    actx.drawImage(canvas, 0, 0);
+    try { actx.drawImage(src, 0, 0); } catch {}
     actx.restore();
-
     const avatarPng = a.toDataURL("image/png");
 
-    // 2) Version médaillon (dessine l'overlay par-dessus)
+    // 2) Version avec médaillon
     const m = document.createElement("canvas");
     m.width = size; m.height = size;
     const mctx = m.getContext("2d")!;
     mctx.drawImage(a, 0, 0);
     const overlay = overlayRef.current;
-    if (overlay && overlay.complete) {
-      mctx.drawImage(overlay, 0, 0, size, size);
-    } else {
-      // Fallback : anneau simple
-      mctx.strokeStyle = "rgba(212,175,55,0.95)"; // or
-      mctx.lineWidth = Math.max(8, size * 0.04);
-      mctx.beginPath();
-      mctx.arc(size / 2, size / 2, size / 2 - mctx.lineWidth, 0, Math.PI * 2);
-      mctx.stroke();
+    try {
+      if (overlay && overlay.complete && overlay.naturalWidth > 0) {
+        mctx.drawImage(overlay, 0, 0, size, size);
+      } else {
+        // fallback anneau
+        mctx.strokeStyle = "rgba(212,175,55,0.95)";
+        mctx.lineWidth = Math.max(8, size * 0.04);
+        mctx.beginPath();
+        mctx.arc(size / 2, size / 2, size / 2 - mctx.lineWidth, 0, Math.PI * 2);
+        mctx.stroke();
+      }
+    } catch (e) {
+      console.warn("[AvatarCreator] overlay draw error:", e);
     }
-
     const medallionPng = m.toDataURL("image/png");
 
     onExport?.({ avatarPng, medallionPng });
 
-    // Téléchargements immédiats
+    // Téléchargements
     const dl1 = document.createElement("a");
     dl1.href = avatarPng; dl1.download = "avatar.png"; dl1.click();
     const dl2 = document.createElement("a");
@@ -337,9 +340,8 @@ export default function AvatarCreator({
     <div className="w-full max-w-5xl mx-auto p-4 md:p-6">
       <h1 className="text-2xl md:text-3xl font-bold mb-4">Créateur d'avatar</h1>
 
-      {/* Zone d'édition */}
       <div className="grid md:grid-cols-[1fr_320px] gap-6 items-start">
-        {/* Canvas + drop */}
+        {/* Zone d'édition */}
         <div>
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -361,28 +363,38 @@ export default function AvatarCreator({
             {!img && (
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none">
                 <p className="text-gray-600 text-sm md:text-base">Glissez-déposez une photo ici</p>
-                <p className="text-gray-500 text-xs">ou utilisez le bouton ci- dessous</p>
+                <p className="text-gray-500 text-xs">ou utilisez le bouton ci-dessous</p>
               </div>
             )}
           </div>
 
-          <div className="mt-3 flex items-center gap-3">
-            <label className="inline-flex items-center px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 cursor-pointer">
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+          {/* ✅ Bloc boutons : input en absolu + z-index pour garantir l'ouverture du sélecteur */}
+          <div className="mt-3 flex items-center gap-3 relative z-10">
+            <label
+              className="inline-flex items-center px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 cursor-pointer"
+              style={{ position: "relative", zIndex: 10 }}
+            >
+              <input
+                type="file"
+                accept="image/*"
+                style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }}
+                onChange={(e) => handleFiles(e.target.files)}
+              />
               <span>Choisir une image…</span>
             </label>
+
             <button
               className="px-3 py-2 rounded-lg bg-black text-white hover:opacity-90"
               onClick={exportPngs}
               disabled={!img}
-              title={!img ? "Importer une image d'abord" : "Exporter en PNG"}
+              title={!img ? "Importer une image d’abord" : "Exporter en PNG"}
             >
               Exporter PNG
             </button>
           </div>
         </div>
 
-        {/* Panneau réglages */}
+        {/* Réglages */}
         <div className="p-4 border rounded-xl bg-white/80 backdrop-blur">
           <h2 className="font-semibold mb-2">Réglages</h2>
 
@@ -424,13 +436,15 @@ export default function AvatarCreator({
                 <span className="text-gray-600">Overlay :</span>
                 <code className="px-2 py-1 bg-gray-100 rounded">{overlaySrc}</code>
               </div>
-              <p className="text-xs text-gray-500 mt-1">Remplacez <code>/assets/medallion.svg</code> par votre médaillon transparent (PNG ou SVG) avec zone centrale évidée.</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Remplacez <code>/assets/medallion.svg</code> par votre médaillon transparent (PNG ou SVG) avec zone centrale évidée.
+              </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Aperçus rapides */}
+      {/* Aperçus */}
       <div className="mt-8">
         <h2 className="font-semibold mb-3">Aperçus export</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -444,13 +458,22 @@ export default function AvatarCreator({
   );
 }
 
-function Preview({ canvasRef, overlayRef, size }: { canvasRef: React.RefObject<HTMLCanvasElement>, overlayRef: React.RefObject<HTMLImageElement>, size: number }) {
+function Preview({
+  canvasRef,
+  overlayRef,
+  size,
+}: {
+  canvasRef: React.RefObject<HTMLCanvasElement>,
+  overlayRef: React.RefObject<HTMLImageElement>,
+  size: number
+}) {
   const [url, setUrl] = useState<string>("");
   const [urlM, setUrlM] = useState<string>("");
 
   useEffect(() => {
     const src = canvasRef.current;
     if (!src) return;
+
     const c = document.createElement("canvas");
     c.width = size; c.height = size;
     const ctx = c.getContext("2d")!;
@@ -459,7 +482,7 @@ function Preview({ canvasRef, overlayRef, size }: { canvasRef: React.RefObject<H
     ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-    ctx.drawImage(src, 0, 0, size, size);
+    try { ctx.drawImage(src, 0, 0, size, size); } catch {}
     ctx.restore();
     setUrl(c.toDataURL("image/png"));
 
@@ -468,7 +491,11 @@ function Preview({ canvasRef, overlayRef, size }: { canvasRef: React.RefObject<H
     const mctx = m.getContext("2d")!;
     mctx.drawImage(c, 0, 0);
     const overlay = overlayRef.current;
-    if (overlay && overlay.complete) mctx.drawImage(overlay, 0, 0, size, size);
+    try {
+      if (overlay && overlay.complete && overlay.naturalWidth > 0) {
+        mctx.drawImage(overlay, 0, 0, size, size);
+      }
+    } catch {}
     setUrlM(m.toDataURL("image/png"));
   });
 
