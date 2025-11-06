@@ -29,7 +29,7 @@ import { History, type SavedMatch } from "../lib/history";
 import { mergeLegToBasics } from "../lib/statsBridge";
 
 // Stats locales riches
-import { commitLegStatsOnce } from "../lib/statsOnce";
+import * as StatsOnce from "../lib/statsOnce";
 import { saveMatchStats, computeLegStats, aggregateMatch } from "../lib/stats";
 import type { Visit, LegInput, LegStats as RichLegStats } from "../lib/stats";
 
@@ -54,11 +54,9 @@ type Mode = "simple" | "double" | "master";
    Helper demandé : construit un résumé standardisé X01
    à partir des stats de la manche (compat avec StatsHub)
 ========================================================= */
-// Construit un résumé X01 à partir de tes stats de manche existantes
 function makeX01SummaryFromLeg(opts: {
   winnerId: string | null;
   players: Array<{ id: string; name: string }>;
-  // statsParJoueur doit fournir au minimum avg3, bestVisit, darts
   statsParJoueur: Record<
     string,
     {
@@ -385,28 +383,24 @@ export default function X01Play({
   // ===== Log volées
   const [visitsLog, setVisitsLog] = React.useState<Visit[]>([]);
   const visitNoRef = React.useRef<number>(0);
-  function pushVisitLog(opts: {
-    playerId: string;
-    score: number;
-    remainingAfter: number;
-    bust?: boolean;
-    isCheckout?: boolean;
-    dartsUsed?: number;
-  }) {
-    visitNoRef.current += 1;
-    setVisitsLog((arr) => [
-      ...arr,
-      {
-        playerId: opts.playerId,
-        visitNo: visitNoRef.current,
-        score: opts.score,
-        segments: null,
-        bust: !!opts.bust,
-        isCheckout: !!opts.isCheckout,
-        dartsUsed: opts.dartsUsed,
-        remainingAfter: opts.remainingAfter,
-      },
-    ]);
+  
+  function pushVisitLog(visit: Visit) {
+    setVisitsLog((prev) => {
+      const arr = [...(prev || [])];
+      const segs =
+        Array.isArray(visit?.darts)
+          ? visit.darts.map((d) => ({ v: Number(d?.v || 0), mult: Number(d?.mult || 1) }))
+          : null;
+
+      arr.push({
+        p: visit.playerId,
+        score: Number(visit.score || 0),
+        remainingAfter: Number(visit.remainingAfter || 0),
+        isCheckout: !!visit.isCheckout,
+        segments: segs,
+      });
+      return arr;
+    });
   }
 
   // ===== onFinish différé
@@ -414,7 +408,7 @@ export default function X01Play({
   const defaultFinishPolicy: FinishPolicy =
     finishPref ?? ((safeGetLocalStorage("opt_continue_policy") ?? "firstToZero") as FinishPolicy);
 
-  // ====== Hook moteur (⚠️ propage outMode/inMode + set/leg)
+  // ====== Hook moteur
   const {
     state,
     currentPlayer,
@@ -446,7 +440,36 @@ export default function X01Play({
     legsPerSet: legsTarget,
     outMode: outM,
     inMode: inM,
+
+    // ====== onLegEnd : enrichit avec miss/bust/dbull AVANT tout
     onLegEnd: async (res: LegResult) => {
+      // (facultatif) push vers statsOnce si dispo
+      StatsOnce.commitX01Leg?.({
+        matchId: matchIdRef.current,
+        profiles,
+        leg: res as any,
+        winnerId: res.winnerId ?? null,
+        startScore,
+      });
+
+      // >>> merge Miss / Bust / DBull dans le LegResult reçu
+      (res as any).miss = (res as any).miss || {};
+      (res as any).bust = (res as any).bust || {};
+      (res as any).dbull = (res as any).dbull || {};
+      for (const pid of Object.keys(missByPlayer)) {
+        (res as any).miss[pid] = ((res as any).miss[pid] || 0) + (missByPlayer[pid] || 0);
+      }
+      for (const pid of Object.keys(bustByPlayer)) {
+        (res as any).bust[pid] = ((res as any).bust[pid] || 0) + (bustByPlayer[pid] || 0);
+      }
+      for (const pid of Object.keys(dbullByPlayer)) {
+        (res as any).dbull[pid] = ((res as any).dbull[pid] || 0) + (dbullByPlayer[pid] || 0);
+      }
+      // aliases de compat
+      (res as any).misses = (res as any).miss;
+      (res as any).busts = (res as any).bust;
+      (res as any).dbulls = (res as any).dbull;
+
       setLastLegResult(res);
       setOverlayOpen(true);
 
@@ -464,19 +487,16 @@ export default function X01Play({
         enriched = { ...(res as any), __legStats: legStats };
         setLastLegResult(enriched as LegResult);
 
-        // >>>>>>> AJOUT : commit du résumé standardisé juste ici (fin de manche)
+        // commit du résumé standardisé
         try {
           const playersArr = ((state.players || []) as EnginePlayer[]).map((p) => ({
             id: p.id,
             name: p.name,
           }));
-
-          // Mappe les stats dans le format attendu
           const statsParJoueur: Record<
             string,
             { avg3?: number; bestVisit?: number; bestCheckout?: number; darts?: number; win?: boolean; buckets?: Record<string, number> }
           > = {};
-
           for (const pid of legStats.players) {
             const pr = (legStats.perPlayer as any)?.[pid] || {};
             statsParJoueur[pid] = {
@@ -488,16 +508,12 @@ export default function X01Play({
               buckets: pr.buckets && Object.keys(pr.buckets).length ? pr.buckets : undefined,
             };
           }
-
           const x01 = makeX01SummaryFromLeg({
             winnerId: res.winnerId ?? null,
             players: playersArr,
             statsParJoueur,
           });
-
           await commitMatchSummary(x01);
-
-          // Optionnel : pousse aussi le résumé dans l'Historique courant
           try {
             const id = historyIdRef.current;
             if (id) {
@@ -509,7 +525,6 @@ export default function X01Play({
         } catch (e) {
           console.warn("[stats] commitMatchSummary failed:", e);
         }
-        // <<<<<<< FIN AJOUT
       } catch (e) {
         console.warn("computeLegStats() error:", e);
       }
@@ -520,6 +535,10 @@ export default function X01Play({
         console.warn("commitFinishedLeg failed:", e);
       }
 
+      // reset des compteurs locaux pour la prochaine manche
+      setMissByPlayer({});
+      setBustByPlayer({});
+      setDBullByPlayer({});
       visitNoRef.current = 0;
       setVisitsLog([]);
     },
@@ -539,7 +558,7 @@ export default function X01Play({
       name: p.name,
     }));
 
-    const legId = `${matchIdRef.current || "local"}::set#${currentSet}::leg#${res.legNo || currentLegInSet}`;
+    const legId = `${matchIdRef.current || "local"}::set#${currentSet}::leg#${(res as any).legNo || currentLegInSet}`;
 
     const perPlayer: Record<string, any> = {};
     const ids = Object.keys((res as any).darts || {});
@@ -567,7 +586,7 @@ export default function X01Play({
       };
     }
 
-    commitLegStatsOnce({
+    StatsOnce.commitLegStatsOnce?.({
       legId,
       kind: "x01",
       finishedAt: (res as any).finishedAt ?? Date.now(),
@@ -625,6 +644,9 @@ export default function X01Play({
   const [pointsSum, setPointsSum] = React.useState<Record<string, number>>({});
   const [visitsCount, setVisitsCount] = React.useState<Record<string, number>>({});
   const [bestVisitByPlayer, setBestVisitByPlayer] = React.useState<Record<string, number>>({});
+  const [missByPlayer, setMissByPlayer] = React.useState<Record<string, number>>({});
+  const [bustByPlayer, setBustByPlayer] = React.useState<Record<string, number>>({});
+  const [dbullByPlayer, setDBullByPlayer] = React.useState<Record<string, number>>({});
   const [hitsByPlayer, setHitsByPlayer] = React.useState<
     Record<string, { h60: number; h100: number; h140: number; h180: number }>
   >({});
@@ -710,6 +732,21 @@ export default function X01Play({
     if (!willBust && needDoubleOut && after === 0) willBust = !isDoubleFinish(currentThrow);
 
     const ptsForStats = willBust ? 0 : volleyPts;
+
+    // --- Comptage MISS / DBULL / BUST --- //
+    const missCount = currentThrow.reduce((n, d) => n + (d.v === 0 ? 1 : 0), 0);
+    const dbullCount = currentThrow.reduce((n, d) => n + (d.v === 25 && d.mult === 2 ? 1 : 0), 0);
+    const isBust = willBust;
+
+    if (missCount > 0) {
+      setMissByPlayer((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + missCount }));
+    }
+    if (dbullCount > 0) {
+      setDBullByPlayer((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + dbullCount }));
+    }
+    if (isBust) {
+      setBustByPlayer((m) => ({ ...m, [currentPlayer.id]: (m[currentPlayer.id] || 0) + 1 }));
+    }
 
     // Log visite
     {
@@ -963,8 +1000,6 @@ export default function X01Play({
             computed: m,
           };
           saveMatchStats(rec);
-    
-          // (Conserve aussi le commit "summary" plus haut à la fin de chaque manche)
         }
       } catch (e) {
         console.warn("aggregateMatch/saveMatchStats:", e);
@@ -1048,6 +1083,11 @@ export default function X01Play({
       const h100: Record<string, number> = {};
       const h140: Record<string, number> = {};
       const h180: Record<string, number> = {};
+      // >>> fallback Miss/Bust/DBull
+      const miss: Record<string, number> = {};
+      const bust: Record<string, number> = {};
+      const dbull: Record<string, number> = {};
+
       for (const p of playersArr) {
         const pid = p.id;
         const dCount = dartsCount[pid] || 0;
@@ -1063,6 +1103,9 @@ export default function X01Play({
         h100[pid] = hitsByPlayer[pid]?.h100 || 0;
         h140[pid] = hitsByPlayer[pid]?.h140 || 0;
         h180[pid] = hitsByPlayer[pid]?.h180 || 0;
+        miss[pid] = missByPlayer[pid] || 0;
+        bust[pid] = bustByPlayer[pid] || 0;
+        dbull[pid] = dbullByPlayer[pid] || 0;
       }
       const order = [...playersArr]
         .sort((a, b) => {
@@ -1089,6 +1132,13 @@ export default function X01Play({
         h100,
         h140,
         h180,
+        // ajouts
+        miss,
+        bust,
+        dbull,
+        misses: miss,
+        busts: bust,
+        dbulls: dbull,
       } as LegResult);
     }
   }, [isOver]);
@@ -1653,7 +1703,7 @@ export default function X01Play({
             {statePlayers.map((p) => {
               const prof = profileById[p.id];
               const avatarSrc = (prof?.avatarDataUrl as string | null) ?? null;
-              const last = lastByPlayer[p.id] || [];
+              const last = lastByPlayer[p.id] || {};
               const bust = !!lastBustByPlayer[p.id];
               const dCount = dartsCount[p.id] || 0;
               const pSum = pointsSum[p.id] || 0;
@@ -1711,34 +1761,10 @@ export default function X01Play({
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
-                      {last.length > 0 ? (
-                        last.map((d, i) => {
-                          const st = chipStyle(d, bust);
-                          return (
-                            <span
-                              key={i}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                minWidth: 34,
-                                height: 24,
-                                padding: "0 8px",
-                                borderRadius: 8,
-                                border: st.border as string,
-                                background: st.background as string,
-                                color: st.color as string,
-                                fontWeight: 800,
-                                fontSize: 12,
-                              }}
-                            >
-                              {fmt(d)}
-                            </span>
-                          );
-                        })
-                      ) : (
-                        <span style={{ color: "#aab", fontSize: 12 }}>Dernière volée : —</span>
-                      )}
+                      {/* Dernière volée : affichage simplifié */}
+                      <span style={{ color: "#aab", fontSize: 12 }}>
+                        Dernière volée : —{/* (optionnel) */}
+                      </span>
                     </div>
 
                     <div style={{ marginTop: 3, fontSize: 11.5, color: "#cfd1d7" }}>
