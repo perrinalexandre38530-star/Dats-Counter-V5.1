@@ -76,7 +76,7 @@ export default function X01End({ go, params }: Props) {
   const dateStr = new Date(when).toLocaleString();
 
   const players: PlayerLite[] = React.useMemo(() => {
-    if (!rec) return []; // important: tableau vide tant que non chargé
+    if (!rec) return [];
     return rec.players?.length ? rec.players : (rec.payload?.players || []);
   }, [rec]);
 
@@ -297,8 +297,8 @@ export default function X01End({ go, params }: Props) {
           </div>
           <TargetPolar m={chartMetrics} />
           <div style={{ marginTop:8, color:"#bbb", fontSize:12 }}>
-            Chaque point = total de hits sur le numéro (échelle normalisée, bord = valeur max).  
-            Les points sont reliés pour former la “forme” de la manche. Inclut Miss, Bull, DBull.
+            Chaque point = total pondéré sur le numéro (S×1, D×2, T×3 ; Bull×1, DBull×2 ; Miss=point séparé),
+            normalisé sur le max de la manche. Les points sont reliés pour “former” la manche.
           </div>
         </Panel>
       ) : null}
@@ -449,7 +449,7 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
     m.bestVisit  = m.bestVisit || n(r.bestVisit, 0);
     m.bestCO     = m.bestCO    || sanitizeCO(r.bestCheckoutScore ?? r.highestCheckout ?? r.bestCheckout);
 
-    // segments (pour la cible) – si fournis
+    // segments (agrégés)
     if (r.segments) {
       m.segOuter  = v(r.segments.outer);
       m.segInner  = v(r.segments.inner);
@@ -457,6 +457,15 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
       m.segTriple = v(r.segments.triple);
       m.segMiss   = v(r.segments.miss);
     }
+
+    // ---- NEW: byNumber (toutes variantes connues)
+    const byNum =
+      r.byNumber ||
+      imp.byNumber ||
+      r.target?.byNumber ||
+      r.perNumber ||
+      undefined;
+    if (byNum && typeof byNum === "object") m.byNumber = byNum as any;
 
     // ===== 3) legacy (compat)
     m.t180 = m.t180 || n(pick(legacy, [`h180.${pid}`, `t180.${pid}`]), 0);
@@ -530,14 +539,12 @@ function buildPerPlayerMetrics(rec: any, summary: any | null, players: PlayerLit
     // CO%
     if (m.coAtt > 0) m.coPct = (m.coHits / m.coAtt) * 100;
 
-    // ===== 5) données de cible (si segments manquent → fallback)
-    // singles = tout ce qui n'est ni D/T/Bull/DBull/Miss (les busts ne sont pas des impacts)
+    // ===== 5) données de cible (si segments manquent → fallback global)
     const singlesFallback = Math.max(0, darts - (n(m.doubles)+n(m.triples)+n(m.bulls)+n(m.dbulls)+n(m.misses)));
     if (m.singles == null) m.singles = singlesFallback;
 
     if (m.segOuter == null || m.segInner == null) {
       const sng = n(m.singles, 0);
-      // split 55/45 si pas de détail outer/inner
       m.segOuter = n(m.segOuter, Math.round(sng*0.55));
       m.segInner = n(m.segInner, sng - n(m.segOuter,0));
     }
@@ -694,8 +701,7 @@ function tdStyle(isRowHeader:boolean):React.CSSProperties{
 }
 
 /* ================================
-   Cible polaire — 1..20 + bull/dbull/miss
-   Data source: metrics.byNumber (plusieurs alias couverts plus haut)
+   Cible polaire — pondérée S×1, D×2, T×3 (+ Bull/DBull), Miss séparé
 ================================ */
 function TargetPolar({ m }: { m: PlayerMetrics }) {
   const size = 340;
@@ -703,20 +709,30 @@ function TargetPolar({ m }: { m: PlayerMetrics }) {
   const Rmax = 140; // rayon utile (bords)
   const labels = [20,1,18,4,13,6,10,15,2,17,3,19,7,16,8,11,14,9,12,5]; // ordre réel autour de la cible
 
-  // Construire les comptes par numéro à partir de m.byNumber (souplesse sur les clés)
-  const counts: number[] = labels.map(nu => {
-    const k = String(nu);
-    const row = (m.byNumber?.[k] || m.byNumber?.[`n${k}`] || {}) as any;
-    const total =
-      n(row.inner) + n(row.outer) + n(row.double) + n(row.triple) + n(row.bull) + n(row.dbull);
-    return total;
-  });
-  const missCount  = n((m.byNumber as any)?.miss ?? (m.segMiss ?? m.misses));
-  const bullCount  = n((m.byNumber as any)?.bull ?? m.bulls);
-  const dbullCount = n((m.byNumber as any)?.dbull ?? m.dbulls);
+  // Lecture byNumber si dispo
+  const BY = (m.byNumber || {}) as ByNumber;
+
+  // Pondération par numéro
+  const weighted = (nu: number) => {
+    const row = (BY[String(nu)] || BY[`n${nu}`] || {}) as any;
+    const singles = n(row.inner) + n(row.outer);
+    const dbl = n(row.double);
+    const trp = n(row.triple);
+    const bull = n(row.bull);
+    const dbull = n(row.dbull);
+    // S×1 + D×2 + T×3 + Bull×1 + DBull×2
+    return singles*1 + dbl*2 + trp*3 + bull*1 + dbull*2;
+  };
+
+  const counts: number[] = labels.map(weighted);
+
+  // Miss & centre
+  const missCount  = n((BY as any)?.miss, n(m.segMiss, n(m.misses)));
+  const bullSum    = n((BY as any)?.bull, n(m.bulls));
+  const dbullSum   = n((BY as any)?.dbull, n(m.dbulls));
 
   // Échelle — max sur l’ensemble
-  const maxVal = Math.max(1, ...counts, missCount, bullCount + dbullCount);
+  const maxVal = Math.max(1, ...counts, missCount, bullSum + 2*dbullSum);
   const scale = (v:number)=> (v / maxVal) * Rmax;
 
   // Points polaires (theta en radians, 0° vers le haut, sens horaire)
@@ -760,9 +776,9 @@ function TargetPolar({ m }: { m: PlayerMetrics }) {
   ));
 
   // bull / dbull au centre (rayons distincts)
-  const rb = Math.max(4, scale(bullCount));
-  const rdb = Math.max(2, scale(dbullCount));
-  const missPos = toXY(scale(missCount), 300); // “miss” affiché vers le bas
+  const rb = Math.max(4, scale(bullSum*1));   // Bull×1
+  const rdb = Math.max(2, scale(dbullSum*2)); // DBull×2
+  const missPos = toXY(scale(missCount), 300); // Miss vers le bas
 
   return (
     <div style={{ display:"flex", justifyContent:"center" }}>
@@ -791,8 +807,8 @@ function TargetPolar({ m }: { m: PlayerMetrics }) {
         {/* Bull / DBull */}
         <circle cx={cx} cy={cy} r={rb} fill="rgba(255,255,255,.2)" stroke="rgba(255,255,255,.35)" strokeWidth={1}/>
         <circle cx={cx} cy={cy} r={rdb} fill="#ffcf57" />
-        <text x={cx} y={cy-8} textAnchor="middle" fontSize="11" fill="#e8e8ec" style={{fontWeight:700}}>Bull {bullCount}</text>
-        <text x={cx} y={cy+10} textAnchor="middle" fontSize="11" fill="#ffcf57" style={{fontWeight:900}}>DBull {dbullCount}</text>
+        <text x={cx} y={cy-8} textAnchor="middle" fontSize="11" fill="#e8e8ec" style={{fontWeight:700}}>Bull {bullSum}</text>
+        <text x={cx} y={cy+10} textAnchor="middle" fontSize="11" fill="#ffcf57" style={{fontWeight:900}}>DBull {dbullSum}</text>
 
         {/* Miss */}
         <circle cx={missPos.x} cy={missPos.y} r={3.5} fill="#ffcf57" />
