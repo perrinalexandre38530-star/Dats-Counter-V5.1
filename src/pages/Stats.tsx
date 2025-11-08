@@ -1,9 +1,16 @@
 // ============================================
 // src/pages/Stats.tsx — Historique + Stats (lecture IDB)
 // ============================================
+
 import React from "react";
 import { History } from "../lib/history";
+import {
+  getBasicProfileStats,
+  getBasicProfileStatsSync,
+  type BasicProfileStats,
+} from "../lib/statsLiteIDB";
 
+/* -------------------- Types -------------------- */
 type Row = {
   id: string;
   kind?: string;
@@ -20,13 +27,42 @@ type Row = {
   } | null;
 };
 
+/* -------------------- Page -------------------- */
 export default function StatsPage() {
   const [rows, setRows] = React.useState<Row[] | null>(null);
+  const [byPlayer, setByPlayer] = React.useState<Record<string, BasicProfileStats>>({}); // map playerId -> stats
 
   const load = React.useCallback(async () => {
     try {
-      const list = await History.list();
-      setRows(list as Row[]);
+      const list = (await History.list()) as Row[];
+      setRows(list);
+
+      // Collecter tous les playerIds visibles
+      const ids = Array.from(
+        new Set(
+          list.flatMap((r) => (Array.isArray(r.players) ? r.players.map((p) => p.id) : []))
+        )
+      ).slice(0, 128);
+
+      // Pré-remplir depuis le mini-cache sync (affichage instantané)
+      const seed: Record<string, BasicProfileStats> = {};
+      for (const id of ids) {
+        seed[id] = getBasicProfileStatsSync(id);
+      }
+      setByPlayer(seed);
+
+      // Puis rafraîchir depuis IDB (async, robuste)
+      const refreshed: Record<string, BasicProfileStats> = { ...seed };
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            refreshed[id] = await getBasicProfileStats(id);
+          } catch {
+            // no-op
+          }
+        })
+      );
+      setByPlayer(refreshed);
     } catch {
       setRows([]);
     }
@@ -43,162 +79,160 @@ export default function StatsPage() {
     return <div style={{ padding: 16, color: "#aaa" }}>Chargement…</div>;
   }
 
+  // Construire une liste "par joueur" (nom à partir du dernier match où il apparaît)
+  const nameById = buildNameIndex(rows);
+  const perPlayerRows = Object.keys(byPlayer).map((id) => ({
+    id,
+    name: nameById[id] || id,
+    ...byPlayer[id],
+  }));
+  perPlayerRows.sort((a, b) => (b.avg3 || 0) - (a.avg3 || 0));
+
   return (
-    <div style={{ padding: 16 }}>
-      <div style={{ fontWeight: 900, fontSize: 20, marginBottom: 12 }}>Historique</div>
+    <div style={{ padding: 16, maxWidth: 980, margin: "0 auto" }}>
+      {/* ======= Stats par joueur (agrégées) ======= */}
+      <h2 style={{ fontWeight: 900, fontSize: 20, marginBottom: 12 }}>Stats par joueur</h2>
+
+      {perPlayerRows.length === 0 ? (
+        <div style={{ opacity: 0.7 }}>Aucune statistique disponible.</div>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gap: 6,
+            gridTemplateColumns:
+              "minmax(120px,1fr) 90px 80px 80px 80px 80px 80px",
+            alignItems: "center",
+            padding: 8,
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,.06)",
+            background:
+              "linear-gradient(180deg, rgba(22,22,26,.95), rgba(14,14,18,.98))",
+          }}
+        >
+          <HeadCell>Joueur</HeadCell>
+          <HeadCell>Moy/3D</HeadCell>
+          <HeadCell>Darts</HeadCell>
+          <HeadCell>Games</HeadCell>
+          <HeadCell>Win%</HeadCell>
+          <HeadCell>Best</HeadCell>
+          <HeadCell>Best CO</HeadCell>
+
+          {perPlayerRows.map((r) => (
+            <React.Fragment key={r.id}>
+              <Cell bold>{r.name}</Cell>
+              <Cell mono>{fmt1(r.avg3 ?? 0)}</Cell>
+              <Cell mono>{r.darts ?? 0}</Cell>
+              <Cell mono>{r.games ?? 0}</Cell>
+              <Cell mono>{fmtPct(r.winRate ?? 0)}</Cell>
+              <Cell mono>{r.bestVisit ?? 0}</Cell>
+              <Cell mono>{r.bestCheckout ?? 0}</Cell>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
+      {/* ======= Historique des matchs ======= */}
+      <h2 style={{ fontWeight: 900, fontSize: 20, margin: "18px 0 12px" }}>Historique</h2>
 
       {!rows.length && (
         <div style={{ opacity: 0.7 }}>Aucune partie enregistrée pour l’instant.</div>
       )}
 
-      {rows.map((r) => {
-        const when = r.createdAt ? new Date(r.createdAt).toLocaleString() : "";
-        const co = r.summary?.co ?? 0;
-        return (
-          <div
-            key={r.id}
-            style={{
-              borderRadius: 12,
-              background: "rgba(255,255,255,0.04)",
-              padding: 12,
-              marginBot// ============================================
-              // src/pages/Stats.tsx
-              // Page unique : agrégats par joueur + liste des derniers matchs
-              // ============================================
-              import React from "react";
-              import { deriveFromHistory } from "../lib/scanHistory";
-              
-              export default function Stats() {
-                const [loading, setLoading] = React.useState(true);
-                const [totals, setTotals] = React.useState<Record<string, any>>({});
-                const [matches, setMatches] = React.useState<any[]>([]);
-              
-                React.useEffect(() => {
-                  (async () => {
-                    const { matches, totalsByPlayer } = await deriveFromHistory();
-                    setTotals(totalsByPlayer);
-                    setMatches(matches);
-                    setLoading(false);
-                  })();
-                }, []);
-              
-                if (loading) {
-                  return <div style={wrap}><h2>Stats</h2><div style={dim}>Chargement…</div></div>;
-                }
-              
-                const rows = Object.values(totals).sort((a: any, b: any) =>
-                  (b.avg3 || 0) - (a.avg3 || 0)
-                );
-              
-                return (
-                  <div style={wrap}>
-                    <h2 style={{margin: "8px 0 12px"}}>Stats par joueur</h2>
-                    {rows.length === 0 ? (
-                      <div style={dim}>Aucune partie terminée.</div>
-                    ) : (
-                      <div style={table}>
-                        <div style={thead}>
-                          <span>Joueur</span><span>Moy/3D</span><span>Darts</span><span>Visits</span>
-                          <span>Best</span><span>Best CO</span><span>CO Hits</span><span>Victoires</span>
-                        </div>
-                        {rows.map((r: any) => (
-                          <div key={r.id} style={trow}>
-                            <span style={{fontWeight:800}}>{r.name}</span>
-                            <span>{r.avg3.toFixed(2)}</span>
-                            <span>{r.darts}</span>
-                            <span>{r.visits}</span>
-                            <span>{r.bestVisit}</span>
-                            <span>{r.bestCheckout}</span>
-                            <span>{r.coHits}</span>
-                            <span>{r.wins}/{r.matches}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-              
-                    <h3 style={{margin: "18px 0 10px"}}>Derniers matchs</h3>
-                    {matches.length === 0 ? (
-                      <div style={dim}>—</div>
-                    ) : (
-                      <div style={{display:"grid", gap:8}}>
-                        {matches.slice(0, 20).map(m => (
-                          <div key={m.id} style={card}>
-                            <div style={{display:"flex", justifyContent:"space-between", marginBottom:6}}>
-                              <div style={{fontWeight:800}}>Match #{m.id.slice(-6)}</div>
-                              <div style={{opacity:.8}}>
-                                {new Date(m.date).toLocaleString()}
-                              </div>
-                            </div>
-                            <div style={{display:"grid", gridTemplateColumns:"1fr 80px 80px 80px 90px", gap:6, fontSize:13}}>
-                              <div style={{opacity:.7}}>Joueur</div>
-                              <div style={{opacity:.7}}>Moy/3D</div>
-                              <div style={{opacity:.7}}>Darts</div>
-                              <div style={{opacity:.7}}>Visits</div>
-                              <div style={{opacity:.7}}>Best / Best CO</div>
-                              {m.players.map((p: any) => {
-                                const per = m.per[p.id] || {};
-                                return (
-                                  <React.Fragment key={p.id}>
-                                    <div style={{fontWeight: p.id===m.winnerId ? 800 : 600, color: p.id===m.winnerId ? "#7fe2a9" : "#ffcf57"}}>
-                                      {p.name || p.id}
-                                      {p.id===m.winnerId ? "  (Vainqueur)" : ""}
-                                    </div>
-                                    <div>{(per.avg3 ?? 0).toFixed?.(2) ?? "0.00"}</div>
-                                    <div>{per.darts ?? 0}</div>
-                                    <div>{per.visits ?? (per.darts ? Math.ceil((per.darts||0)/3) : 0)}</div>
-                                    <div>{(per.bestVisit ?? 0)} / {(per.bestCheckout ?? 0)}</div>
-                                  </React.Fragment>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-              
-              const wrap: React.CSSProperties = {
-                maxWidth: 880, margin: "0 auto", padding: 16, color: "#eaeaf0"
-              };
-              const dim: React.CSSProperties = { opacity: .7 };
-              const table: React.CSSProperties = { display:"grid", gap:6 };
-              const thead: React.CSSProperties = {
-                display:"grid", gridTemplateColumns:"1fr 80px 80px 80px 80px 80px 80px 90px",
-                gap:6, fontSize:13, opacity:.75
-              };
-              const trow: React.CSSProperties = {
-                display:"grid", gridTemplateColumns:"1fr 80px 80px 80px 80px 80px 80px 90px",
-                gap:6, padding:"6px 8px",
-                background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.06)", borderRadius:8
-              };
-              const card: React.CSSProperties = {
-                padding:10, borderRadius:10,
-                background:"linear-gradient(180deg, rgba(22,22,26,.96), rgba(14,14,16,.98))",
-                border:"1px solid rgba(255,255,255,.08)"
-              };
-              tom: 10,
-              border: "1px solid rgba(255,255,255,0.06)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <div style={{ fontWeight: 700 }}>{r.kind?.toUpperCase() || "MATCH"}</div>
-              <div style={{ opacity: 0.7 }}>{when}</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {rows.map((r) => {
+          const when = r.createdAt ? new Date(r.createdAt).toLocaleString() : "";
+          const co = r.summary?.co ?? 0;
+          return (
+            <div
+              key={r.id}
+              style={{
+                borderRadius: 12,
+                background:
+                  "linear-gradient(180deg, rgba(20,20,26,.55), rgba(14,14,18,.75))",
+                padding: 12,
+                border: "1px solid rgba(255,255,255,0.06)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <div style={{ fontWeight: 700 }}>
+                  {r.kind?.toUpperCase() || "MATCH"}
+                </div>
+                <div style={{ opacity: 0.7 }}>{when}</div>
+              </div>
+
+              <div style={{ marginTop: 6, opacity: 0.9, fontSize: 13 }}>
+                {r.players?.map((p) => (
+                  <span key={p.id} style={{ marginRight: 8 }}>
+                    {p.name || p.id}
+                    {r.winnerId === p.id ? " 🏆" : ""}
+                  </span>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
+                Legs: {r.summary?.legs ?? 0} · Darts: {r.summary?.darts ?? 0} · CO: {co}
+              </div>
             </div>
-            <div style={{ marginTop: 6, opacity: 0.9, fontSize: 13 }}>
-              {r.players?.map((p) => (
-                <span key={p.id} style={{ marginRight: 8 }}>
-                  {p.name || p.id}{r.winnerId === p.id ? " 🏆" : ""}
-                </span>
-              ))}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
-              Legs: {r.summary?.legs ?? 0} · Darts: {r.summary?.darts ?? 0} · CO: {co}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
+}
+
+/* -------------------- UI helpers -------------------- */
+function HeadCell({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        opacity: 0.75,
+        padding: "4px 2px",
+        borderBottom: "1px solid rgba(255,255,255,.06)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+function Cell({
+  children,
+  mono,
+  bold,
+}: {
+  children: React.ReactNode;
+  mono?: boolean;
+  bold?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        padding: "6px 2px",
+        fontFamily: mono ? "ui-monospace, SFMono-Regular, Menlo, monospace" : undefined,
+        fontWeight: bold ? 800 : 600,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* -------------------- Utils -------------------- */
+function fmt1(n: number) {
+  return (Math.round((n ?? 0) * 10) / 10).toFixed(1);
+}
+function fmtPct(n: number) {
+  const v = Math.round((n ?? 0) * 10) / 10; // déjà en %
+  return `${v}%`;
+}
+function buildNameIndex(rows: Row[]) {
+  const map: Record<string, string> = {};
+  for (const r of rows) {
+    if (!Array.isArray(r.players)) continue;
+    for (const p of r.players) {
+      if (p?.id) map[p.id] = p.name || map[p.id] || p.id;
+    }
+  }
+  return map;
 }

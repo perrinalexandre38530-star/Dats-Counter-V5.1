@@ -29,16 +29,17 @@ import { History, type SavedMatch } from "../lib/history";
 import type { Visit, PlayerLite } from "../lib/types";
 import { StatsBridge } from "../lib/statsBridge";
 
-// Stats locales riches (on garde, pour compat interne si besoin ponctuel)
+// Stats locales riches (compat interne)
 import * as StatsOnce from "../lib/statsOnce";
 import { saveMatchStats, aggregateMatch } from "../lib/stats";
+
+// Agrégats légers persistants (IDB)
 import { addMatchSummary } from "../lib/statsLiteIDB";
+// Extracteur robuste (summary/payload → perPlayer)
+import { extractAggFromSavedMatch } from "../lib/aggFromHistory";
 
 // Résumé cumulable
 import { commitMatchSummary, buildX01Summary } from "../lib/playerStats";
-
-// ===== [STATS LITE] : agrégats persistants légers en IndexedDB =====
-import { addMatchSummary as addLiteSummary } from "../lib/statsLiteIDB";
 
 // Types app
 import type {
@@ -58,16 +59,26 @@ function mapEnginePlayersToLite(
   return (enginePlayers || []).map((p) => ({
     id: p.id,
     name: p.name || "",
-    avatarDataUrl: (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as string | null,
+    avatarDataUrl:
+      (profiles.find((pr) => pr.id === p.id)?.avatarDataUrl ?? null) as
+        | string
+        | null,
   }));
 }
 
 /* --- helper pour % --- */
-const pct = (num: number, den: number) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
+const pct = (num: number, den: number) =>
+  den > 0 ? Math.round((num / den) * 1000) / 10 : 0;
 
 /* ---------- Helpers Dernière volée (tolérant à la source) ---------- */
 type SegLite = { v: number; mult?: 1 | 2 | 3 };
-type VisitLite = { p: string; segments: SegLite[]; bust?: boolean; score?: number; ts?: number };
+type VisitLite = {
+  p: string;
+  segments: SegLite[];
+  bust?: boolean;
+  score?: number;
+  ts?: number;
+};
 
 function findVisitsSrc(src: any): VisitLite[] {
   return (
@@ -95,7 +106,9 @@ function segLabel(seg: SegLite) {
 export function lastVisitLabel(src: any, pid: string): string {
   const v = lastVisitForPlayer(src, pid);
   if (!v) return "—";
-  const s = (Array.isArray(v.segments) ? v.segments : []).map(segLabel).join(" · ") || "—";
+  const s =
+    (Array.isArray(v.segments) ? v.segments : []).map(segLabel).join(" · ") ||
+    "—";
   return v.bust ? (s !== "—" ? `${s}  (Bust)` : "Bust") : s;
 }
 
@@ -286,8 +299,14 @@ function readStartParams(
 }
 
 /* ---- Checkout (raccourci minimal) ---- */
-const SINGLE_SET = new Set<number>([...Array(20).keys()].map((n) => n + 1).concat([25, 50]));
-function suggestCheckout(rest: number, doubleOut: boolean, dartsLeft: 1 | 2 | 3): string[] {
+const SINGLE_SET = new Set<number>(
+  [...Array(20).keys()].map((n) => n + 1).concat([25, 50])
+);
+function suggestCheckout(
+  rest: number,
+  doubleOut: boolean,
+  dartsLeft: 1 | 2 | 3
+): string[] {
   if (rest < 2 || rest > 170) return [];
   if (dartsLeft === 1) {
     if (doubleOut) {
@@ -417,7 +436,7 @@ export default function X01Play({
   setsToWin?: number;
   legsPerSet?: number;
 }) {
-  // ======= Fusion finale des paramètres (props/params/global) =======
+  // ======= Fusion des paramètres =======
   const merged = readStartParams(
     playerIds,
     start as any,
@@ -437,7 +456,7 @@ export default function X01Play({
 
   const resumeId: string | undefined = params?.resumeId;
 
-  // Reprise snapshot X01 (depuis l’historique ou via merged.resume)
+  // Reprise snapshot X01
   const resumeSnapshot = React.useMemo<X01Snapshot | null>(() => {
     if (merged.resume) return merged.resume as X01Snapshot;
     if (!resumeId) return null;
@@ -462,9 +481,15 @@ export default function X01Play({
       const arr = [...(prev || [])];
       const segs =
         Array.isArray(visit?.darts)
-          ? visit.darts.map((d: UIDart) => ({ v: Number(d?.v || 0), mult: Number(d?.mult || 1) }))
+          ? visit.darts.map((d: UIDart) => ({
+              v: Number(d?.v || 0),
+              mult: Number(d?.mult || 1),
+            }))
           : Array.isArray((visit as any)?.segments)
-          ? (visit as any).segments.map((s: any) => ({ v: Number(s?.v || 0), mult: Number(s?.mult || 1) }))
+          ? (visit as any).segments.map((s: any) => ({
+              v: Number(s?.v || 0),
+              mult: Number(s?.mult || 1),
+            }))
           : null;
 
       arr.push({
@@ -535,7 +560,10 @@ export default function X01Play({
       // Source de visites pour StatsBridge (Visit[])
       const visits: Visit[] = (visitsLog || []).map((v) => ({
         p: v.p,
-        segments: (v.segments || []).map((s) => ({ v: Number(s.v || 0), mult: (Number(s.mult || 1) as 1 | 2 | 3) })),
+        segments: (v.segments || []).map((s) => ({
+          v: Number(s.v || 0),
+          mult: Number(s.mult || 1) as 1 | 2 | 3,
+        })),
         bust: !!v.bust,
         score: Number(v.score || 0),
         ts: v.ts || Date.now(),
@@ -583,8 +611,12 @@ export default function X01Play({
           updatedAt: Date.now(),
           summary: {
             legs: 1,
-            darts: Object.fromEntries(Object.keys(legacy.darts || {}).map((k) => [k, legacy.darts[k] || 0])),
-            avg3ByPlayer: Object.fromEntries(Object.keys(legacy.avg3 || {}).map((k) => [k, legacy.avg3[k] || 0])),
+            darts: Object.fromEntries(
+              Object.keys(legacy.darts || {}).map((k) => [k, legacy.darts[k] || 0])
+            ),
+            avg3ByPlayer: Object.fromEntries(
+              Object.keys(legacy.avg3 || {}).map((k) => [k, legacy.avg3[k] || 0])
+            ),
             co: Object.values(legacy.coHits || {}).reduce((s, n) => s + (n || 0), 0),
           },
           payload: { leg, legacy },
@@ -605,7 +637,9 @@ export default function X01Play({
 
   // Historique id
   const historyIdRef = React.useRef<string | undefined>(resumeId);
-  const matchIdRef = React.useRef<string>(resumeId ?? (crypto.randomUUID?.() ?? String(Date.now())));
+  const matchIdRef = React.useRef<string>(
+    resumeId ?? (crypto.randomUUID?.() ?? String(Date.now()))
+  );
 
   // ----- Statistiques live pour l’affichage
   const [lastByPlayer, setLastByPlayer] = React.useState<Record<string, UIDart[]>>({});
@@ -633,7 +667,10 @@ export default function X01Play({
     () => createAudio(["/sounds/dart-hit.mp3", "/sounds/dart-hit.ogg"]),
     []
   );
-  const bustSnd = React.useMemo(() => createAudio(["/sounds/bust.mp3", "/sounds/bust.ogg"]), []);
+  const bustSnd = React.useMemo(
+    () => createAudio(["/sounds/bust.mp3", "/sounds/bust.ogg"]),
+    []
+  );
   const voiceOn = React.useMemo<boolean>(
     () => (safeGetLocalStorage("opt_voice") ?? "true") === "true",
     []
@@ -754,7 +791,12 @@ export default function X01Play({
       [currentPlayer.id]: Math.max(m[currentPlayer.id] || 0, volleyPts),
     }));
     setHitsByPlayer((m) => {
-      const prev = m[currentPlayer.id] || { h60: 0, h100: 0, h140: 0, h180: 0 };
+      const prev = m[currentPlayer.id] || {
+        h60: 0,
+        h100: 0,
+        h140: 0,
+        h180: 0,
+      };
       const add = { ...prev };
       if (volleyPts >= 60) add.h60++;
       if (volleyPts >= 100) add.h100++;
@@ -787,7 +829,9 @@ export default function X01Play({
     } else {
       const voice = voiceOn && "speechSynthesis" in window;
       if (voice) {
-        const u = new SpeechSynthesisUtterance(`${currentPlayer.name || ""}, ${volleyPts} points`);
+        const u = new SpeechSynthesisUtterance(
+          `${currentPlayer.name || ""}, ${volleyPts} points`
+        );
         u.rate = 1;
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(u);
@@ -815,7 +859,8 @@ export default function X01Play({
       score: scoresByPlayer[p.id] ?? startScore,
     }));
     items.sort((a, b) => {
-      const az = a.score === 0, bz = b.score === 0;
+      const az = a.score === 0,
+        bz = b.score === 0;
       if (az && !bz) return -1;
       if (!az && bz) return 1;
       return a.score - b.score;
@@ -866,10 +911,12 @@ export default function X01Play({
   }
 
   const currentAvatar =
-    (currentPlayer && (profileById[currentPlayer.id]?.avatarDataUrl as string | null)) ?? null;
+    (currentPlayer &&
+      (profileById[currentPlayer.id]?.avatarDataUrl as string | null)) ??
+    null;
 
-  const curDarts = currentPlayer ? (dartsCount[currentPlayer.id] || 0) : 0;
-  const curPts = currentPlayer ? (pointsSum[currentPlayer.id] || 0) : 0;
+  const curDarts = currentPlayer ? dartsCount[currentPlayer.id] || 0 : 0;
+  const curPts = currentPlayer ? pointsSum[currentPlayer.id] || 0 : 0;
   const curM3D = curDarts > 0 ? ((curPts / curDarts) * 3).toFixed(2) : "0.00";
   const dartsLeft = (3 - currentThrow.length) as 1 | 2 | 3;
 
@@ -893,7 +940,12 @@ export default function X01Play({
 
           const matchId = matchIdRef.current;
           const kind = "x01";
-          const summary = StatsBridge.makeMatch(matchLegsRef.current, playersArr, matchId, kind);
+          const summary = StatsBridge.makeMatch(
+            matchLegsRef.current,
+            playersArr,
+            matchId,
+            kind
+          );
 
           // Écran de fin (passe summary + legs)
           openEndOfMatchOverlay(summary, { legs: matchLegsRef.current });
@@ -910,25 +962,14 @@ export default function X01Play({
             },
           });
 
-          // ---------- B) Appel d’upsert sûr côté X01Play (match) ----------
-          // On fabrique un petit résumé stable + payload "lourd"
-          const per = matchLegsRef.current.flatMap((l: any) => l.perPlayer || []);
-          const dartsTotal = per.reduce((n: number, p: any) => n + (p.darts || 0), 0);
-          const avg3ByPlayer: Record<string, number> = Object.fromEntries(
-            playersArr.map((pl) => {
-              const perP = per.filter((x: any) => x.playerId === pl.id);
-              const pts = perP.reduce((s: number, x: any) => s + (x.points || 0), 0);
-              const d  = perP.reduce((s: number, x: any) => s + (x.darts  || 0), 0);
-              const a3 = d > 0 ? (pts / d) * 3 : 0;
-              return [pl.id, Math.round(a3 * 100) / 100];
-            })
-          );
-          const co = matchLegsRef.current.filter((l: any) => !!l.winnerId).length;
-
-          // Visites à persister (structure Visit)
+          // ---------- Upsert “match” + agrégateur LITE via safeSaveMatch ----------
+          // On construit un payload compact (visits + legs) pour l’historique.
           const visitsForPersist: Visit[] = (visitsLog || []).map((v) => ({
             p: v.p,
-            segments: (v.segments || []).map((s) => ({ v: Number(s.v || 0), mult: (Number(s.mult || 1) as 1 | 2 | 3) })),
+            segments: (v.segments || []).map((s) => ({
+              v: Number(s.v || 0),
+              mult: Number(s.mult || 1) as 1 | 2 | 3,
+            })),
             bust: !!v.bust,
             score: Number(v.score || 0),
             ts: v.ts || Date.now(),
@@ -937,6 +978,20 @@ export default function X01Play({
             // @ts-ignore
             remainingAfter: (v as any).remainingAfter,
           }));
+
+          // Calculs légers pour le résumé list (darts total / avg3 par joueur)
+          const per = matchLegsRef.current.flatMap((l: any) => l.perPlayer || []);
+          const dartsTotal = per.reduce((n: number, p: any) => n + (p.darts || 0), 0);
+          const avg3ByPlayer: Record<string, number> = Object.fromEntries(
+            playersArr.map((pl) => {
+              const perP = per.filter((x: any) => x.playerId === pl.id);
+              const pts = perP.reduce((s: number, x: any) => s + (x.points || 0), 0);
+              const d = perP.reduce((s: number, x: any) => s + (x.darts || 0), 0);
+              const a3 = d > 0 ? (pts / d) * 3 : 0;
+              return [pl.id, Math.round(a3 * 100) / 100];
+            })
+          );
+          const co = matchLegsRef.current.filter((l: any) => !!l.winnerId).length;
 
           await safeSaveMatch({
             id: matchId || crypto.randomUUID(),
@@ -955,53 +1010,7 @@ export default function X01Play({
             },
           });
 
-// === ÉCRIRE l’agrégat joueurs dans IndexedDB + mini-cache ===
-// On reconstruit un delta simple par joueur (darts, points, bestVisit, bestCheckout)
-try {
-  const per: Record<string, { darts: number; points: number; bestVisit?: number; bestCheckout?: number }> = {};
-  for (const leg of matchLegsRef.current || []) {
-    const arr = (leg?.perPlayer || []) as Array<any>;
-    for (const pp of arr) {
-      const pid = pp.playerId;
-      if (!per[pid]) per[pid] = { darts: 0, points: 0, bestVisit: 0, bestCheckout: 0 };
-      per[pid].darts += Number(pp.darts || 0);
-      per[pid].points += Number(pp.points || 0);
-      per[pid].bestVisit = Math.max(per[pid].bestVisit || 0, Number(pp.bestVisit || 0));
-      per[pid].bestCheckout = Math.max(per[pid].bestCheckout || 0, Number(pp.bestCheckout || 0));
-    }
-  }
-  await addMatchSummary({
-    winnerId: (winner?.id ?? null) || (summary?.winnerId ?? null),
-    perPlayer: per,
-  });
-} catch (e) {
-  console.warn("[statsLiteIDB:addMatchSummary] failed:", e);
-}
-
-          // ---------------------------------------------------------------
-
-          // ===== [STATS LITE] push agrégats légers → IndexedDB =====
-          try {
-            const perPlayer: Record<string, { darts: number; points: number; bestVisit?: number; bestCheckout?: number }> = {};
-            (state.players || []).forEach((p: any) => {
-              const pid = p.id;
-              perPlayer[pid] = {
-                darts: (dartsCount?.[pid] || 0),
-                points: (pointsSum?.[pid] || 0),
-                bestVisit: (bestVisitByPlayer?.[pid] || 0),
-                bestCheckout: 0,
-              };
-            });
-            addLiteSummary({
-              winnerId: summary.winnerId ?? (winner?.id ?? null),
-              perPlayer,
-            });
-          } catch (e) {
-            console.warn("[statsLiteIDB] addMatchSummary failed:", e);
-          }
-          // ==========================================================
-
-          // Compat interne : on garde aussi ton commit résumé joueur + stats persistées locales
+          // ===== Compat interne : commit résumé joueurs (playerStats) =====
           try {
             commitMatchSummary(
               buildX01Summary({
@@ -1009,7 +1018,8 @@ try {
                 winnerId: summary.winnerId ?? null,
                 perPlayer: summary.perPlayer?.map((pp: any) => ({
                   playerId: pp.playerId,
-                  name: playersArr.find((p) => p.id === pp.playerId)?.name || "",
+                  name:
+                    playersArr.find((p) => p.id === pp.playerId)?.name || "",
                   avg3: Number(pp.avg3 || 0),
                   bestVisit: Number(pp.bestVisit || 0),
                   bestCheckout: Number(pp.bestCheckout || 0),
@@ -1023,10 +1033,13 @@ try {
             console.warn("[commitMatchSummary] compat failed:", e);
           }
 
-          // Compat encore: saveMatchStats (ancien pipeline)
+          // ===== Compat legacy : statsOnce globales =====
           try {
             const winnerIdNow = summary.winnerId ?? (winner?.id ?? playersArr[0]?.id);
-            const m = aggregateMatch(matchLegsRef.current as any, playersArr.map((p) => p.id));
+            const m = aggregateMatch(
+              matchLegsRef.current as any,
+              playersArr.map((p) => p.id)
+            );
             saveMatchStats({
               id: crypto.randomUUID?.() ?? String(Date.now()),
               createdAt: Date.now(),
@@ -1052,7 +1065,16 @@ try {
     // TTS victoire
     const voice = (safeGetLocalStorage("opt_voice") ?? "true") === "true";
     if (!justFinished || !voice || !("speechSynthesis" in window)) return;
-    const ords = ["", "Deuxième", "Troisième", "Quatrième", "Cinquième", "Sixième", "Septième", "Huitième"];
+    const ords = [
+      "",
+      "Deuxième",
+      "Troisième",
+      "Quatrième",
+      "Cinquième",
+      "Sixième",
+      "Septième",
+      "Huitième",
+    ];
     const ordered = [...liveRanking].sort((a, b) => {
       const az = a.score === 0,
         bz = b.score === 0;
@@ -1062,7 +1084,8 @@ try {
     });
     const parts: string[] = [];
     if (ordered[0]) parts.push(`Victoire ${ordered[0].name}`);
-    for (let i = 1; i < ordered.length && i < 8; i++) parts.push(`${ords[i]} ${ordered[i].name}`);
+    for (let i = 1; i < ordered.length && i < 8; i++)
+      parts.push(`${ords[i]} ${ordered[i].name}`);
     const text = parts.join(". ") + ".";
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1;
@@ -1107,7 +1130,7 @@ try {
     if (!isOver) return;
     if (!overlayOpen) setOverlayOpen(true);
     if (!lastLegResult) {
-      const playersArr = ((state.players || []) as { id: string; name: string }[]);
+      const playersArr = (state.players || []) as { id: string; name: string }[];
       const remaining: Record<string, number> = {};
       const darts: Record<string, number> = {};
       const visits: Record<string, number> = {};
@@ -1164,7 +1187,7 @@ try {
           const as = remaining[a.id] ?? startScore;
           const bs = remaining[b.id] ?? startScore;
           if (as === 0 && bs !== 0) return -1;
-          if (as !== 0 && bs === 0) return 1;
+          if (!as && bs === 0) return 1;
           if (as !== bs) return as - bs;
           return (avg3[b.id] ?? 0) - (avg3[a.id] ?? 0);
         })
@@ -1199,15 +1222,35 @@ try {
         bulls,
       } as LegResult);
     }
-  }, [isOver, overlayOpen, lastLegResult, state.players, scoresByPlayer, startScore, dartsCount, pointsSum, visitsCount, bestVisitByPlayer, hitsByPlayer, missByPlayer, bustByPlayer, dbullByPlayer, impactByPlayer]);
+  }, [
+    isOver,
+    overlayOpen,
+    lastLegResult,
+    state.players,
+    scoresByPlayer,
+    startScore,
+    dartsCount,
+    pointsSum,
+    visitsCount,
+    bestVisitByPlayer,
+    hitsByPlayer,
+    missByPlayer,
+    bustByPlayer,
+    dbullByPlayer,
+    impactByPlayer,
+  ]);
 
   // Persistance “en cours”
   function buildEngineLike(dartsThisTurn: UIDart[], winnerId?: string | null) {
-    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map((p) => ({
-      id: p.id,
-      name: p.name,
-    }));
-    const scores: number[] = playersArr.map((p) => scoresByPlayer[p.id] ?? startScore);
+    const playersArr: EnginePlayer[] = ((state.players || []) as EnginePlayer[]).map(
+      (p) => ({
+        id: p.id,
+        name: p.name,
+      })
+    );
+    const scores: number[] = playersArr.map(
+      (p) => scoresByPlayer[p.id] ?? startScore
+    );
     const idx = playersArr.findIndex((p) => p.id === (currentPlayer?.id as string));
     return {
       rules: {
@@ -1279,17 +1322,33 @@ try {
         }}
       >
         {/* Barre haute */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>← Quitter</button>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 8,
+          }}
+        >
+          <button onClick={() => (pendingFinish ? flushPendingFinish() : onExit())} style={goldBtn}>
+            ← Quitter
+          </button>
           {/* ✅ Set/Leg UNIQUEMENT ici */}
-          <SetLegChip currentSet={currentSet} currentLegInSet={currentLegInSet} setsTarget={setsTarget} legsTarget={legsTarget} />
+          <SetLegChip
+            currentSet={currentSet}
+            currentLegInSet={currentLegInSet}
+            setsTarget={setsTarget}
+            legsTarget={legsTarget}
+          />
         </div>
 
         {/* HEADER */}
         <div style={{ maxWidth: CONTENT_MAX, margin: "0 auto", paddingInline: 0 }}>
           <HeaderBlock
             currentPlayer={currentPlayer as any}
-            currentAvatar={(currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null}
+            currentAvatar={
+              (currentPlayer && profileById[currentPlayer.id]?.avatarDataUrl) || null
+            }
             currentRemaining={currentRemaining}
             currentThrow={currentThrow}
             doubleOut={outM !== "simple"}
@@ -1585,7 +1644,11 @@ try {
                 marginTop: 2,
               }}
             >
-              {Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0)}
+              {Math.max(
+                currentRemaining -
+                  currentThrow.reduce((s, d) => s + dartValue(d), 0),
+                0
+              )}
             </div>
 
             {/* Pastilles volée */}
@@ -1593,10 +1656,13 @@ try {
               {[0, 1, 2].map((i: number) => {
                 const d = currentThrow[i];
                 const afterNow =
-                  currentRemaining - currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
+                  currentRemaining -
+                  currentThrow.slice(0, i + 1).reduce((s, x) => s + dartValue(x), 0);
                 const wouldBust =
                   afterNow < 0 ||
-                  (props.doubleOut && afterNow === 0 && !isDoubleFinish(currentThrow.slice(0, i + 1)));
+                  (props.doubleOut &&
+                    afterNow === 0 &&
+                    !isDoubleFinish(currentThrow.slice(0, i + 1)));
                 const st = chipStyle(d, wouldBust);
                 return (
                   <span
@@ -1624,7 +1690,11 @@ try {
             {/* Checkout (header) */}
             {(() => {
               const only = suggestCheckout(
-                Math.max(currentRemaining - currentThrow.reduce((s, d) => s + dartValue(d), 0), 0),
+                Math.max(
+                  currentRemaining -
+                    currentThrow.reduce((s, d) => s + dartValue(d), 0),
+                  0
+                ),
                 props.doubleOut,
                 (3 - currentThrow.length) as 1 | 2 | 3
               )[0];
@@ -1664,14 +1734,29 @@ try {
             })()}
 
             {/* Mini-Classement */}
-            <div style={{ ...miniCard, alignSelf: "center", width: "min(320px, 100%)", height: "auto", padding: 6 }}>
-              <div style={{ maxHeight: 3 * 28, overflow: (liveRanking.length > 3 ? "auto" : "visible") as any }}>
+            <div
+              style={{
+                ...miniCard,
+                alignSelf: "center",
+                width: "min(320px, 100%)",
+                height: "auto",
+                padding: 6,
+              }}
+            >
+              <div
+                style={{
+                  maxHeight: 3 * 28,
+                  overflow: (liveRanking.length > 3 ? "auto" : "visible") as any,
+                }}
+              >
                 {liveRanking.map((r, i) => (
                   <div key={r.id} style={{ ...miniRankRow, marginBottom: 3 }}>
                     <div style={miniRankName}>
                       {i + 1}. {r.name}
                     </div>
-                    <div style={r.score === 0 ? miniRankScoreFini : miniRankScore}>
+                    <div
+                      style={r.score === 0 ? miniRankScoreFini : miniRankScore}
+                    >
                       {r.score === 0 ? "FINI" : r.score}
                     </div>
                   </div>
@@ -1724,7 +1809,8 @@ try {
     return (
       <div
         style={{
-          background: "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
+          background:
+            "linear-gradient(180deg, rgba(15,15,18,.9), rgba(10,10,12,.85))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 18,
           padding: PLAYERS_BLOCK_PADDING,
@@ -1762,13 +1848,14 @@ try {
             {(() => {
               const only = suggestCheckout(
                 Math.max(
-                  currentRemainingHere - currentThrow.reduce((s, d) => s + dartValue(d), 0),
+                  currentRemainingHere -
+                    currentThrow.reduce((s, d) => s + dartValue(d), 0),
                   0
                 ),
                 outMode !== "simple",
                 (3 - currentThrow.length) as 1 | 2 | 3
               )[0];
-            if (!only) return null;
+              if (!only) return null;
               return (
                 <span
                   style={{
@@ -1830,7 +1917,8 @@ try {
                     gap: PLAYER_ROW_GAP,
                     padding: `${PLAYER_ROW_PAD_Y}px 10px`,
                     borderRadius: 12,
-                    background: "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
+                    background:
+                      "linear-gradient(180deg, rgba(28,28,32,.65), rgba(18,18,20,.65))",
                     border: "1px solid rgba(255,255,255,.07)",
                     marginBottom: 6,
                   }}
@@ -1871,14 +1959,22 @@ try {
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {/* Ligne prénom + pastilles "dernière volée" */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        minWidth: 0,
+                      }}
+                    >
                       <div style={{ fontWeight: 800, color: "#ffcf57" }}>{p.name}</div>
                       <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                         {renderLastVisitChips({ __visits: visitsLog, ...state }, p.id)}
                       </div>
                     </div>
 
-                    {/* Détails compactés (sans Set/Leg) */}
+                    {/* Détails compactés */}
                     <div style={{ marginTop: 3, fontSize: 11.5, color: "#cfd1d7" }}>
                       Darts: {dCount} • Moy/3D: {a3d}
                     </div>
@@ -1887,7 +1983,8 @@ try {
                   <div
                     style={{
                       fontWeight: 900,
-                      color: (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57",
+                      color:
+                        (scoresByPlayer[p.id] ?? start) === 0 ? "#7fe2a9" : "#ffcf57",
                     }}
                   >
                     {scoresByPlayer[p.id] ?? start}
@@ -1992,20 +2089,25 @@ function SetLegChip({
     alignItems: "center",
     gap: 8,
     padding: "6px 10px",
-    borderRadius: 999,
     border: "1px solid rgba(255,200,80,.35)",
-    background: "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
+    background:
+      "linear-gradient(180deg, rgba(255,195,26,.12), rgba(30,30,34,.95))",
     color: "#ffcf57",
     fontWeight: 800,
     fontSize: 12,
     boxShadow: "0 6px 18px rgba(255,195,26,.15)",
     whiteSpace: "nowrap",
+    borderRadius: 999,
   };
   return (
     <span style={st}>
-      <span>Set {currentSet}/{setsTarget}</span>
+      <span>
+        Set {currentSet}/{setsTarget}
+      </span>
       <span style={{ opacity: 0.6 }}>•</span>
-      <span>Leg {currentLegInSet}/{legsTarget}</span>
+      <span>
+        Leg {currentLegInSet}/{legsTarget}
+      </span>
     </span>
   );
 }
@@ -2184,7 +2286,7 @@ function makeX01RecordFromEngineCompat(args: {
   return rec as MatchRecord;
 }
 
-/* ====== PATCH (B) — Helper d’upsert sûr Historique (match) ====== */
+/* ====== PATCH (B) — Helper d’upsert sûr Historique (match) + agrégateur LITE ====== */
 async function safeSaveMatch({
   id,
   players,
@@ -2195,7 +2297,12 @@ async function safeSaveMatch({
   id: string;
   players: { id: string; name?: string; avatarDataUrl?: string | null }[];
   winnerId: string | null;
-  summary: { legs?: number; darts?: number; avg3ByPlayer?: Record<string, number>; co?: number } | null;
+  summary: {
+    legs?: number;
+    darts?: number;
+    avg3ByPlayer?: Record<string, number>;
+    co?: number;
+  } | null;
   payload: any;
 }) {
   try {
@@ -2211,6 +2318,19 @@ async function safeSaveMatch({
       summary: summary || null,
       payload, // lourd → compressé par history.ts
     });
+
+    // 🔶 NEW: alimente l'agrégateur profils immédiatement (unique source)
+    const { winnerId: w, perPlayer } = extractAggFromSavedMatch({
+      id,
+      players,
+      winnerId,
+      summary,
+      payload,
+    });
+    if (Object.keys(perPlayer || {}).length) {
+      await addMatchSummary({ winnerId: w, perPlayer });
+    }
+
     await History.list(); // hydrate le cache synchro
     console.info("[HIST:OK]", id);
   } catch (e) {

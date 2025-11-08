@@ -7,10 +7,10 @@ import { History } from "../lib/history";
 import { loadStore } from "../lib/storage";
 import StatsPlayerDashboard, {
   type PlayerDashboardStats,
+  GoldPill,
+  ProfilePill,
 } from "../components/StatsPlayerDashboard";
-import { GoldPill, ProfilePill } from "../components/StatsPlayerDashboard";
 import { useQuickStats } from "../hooks/useQuickStats";
-import { getBasicProfileStats } from "../lib/statsBridge";
 import HistoryPage from "./HistoryPage";
 
 /* ---------- Thème local ---------- */
@@ -44,24 +44,39 @@ type Props = {
 
 /* ---------- Helpers ---------- */
 const toArr = <T,>(v: any): T[] => (Array.isArray(v) ? (v as T[]) : []);
-const toObj = <T,>(v: any): T =>
-  v && typeof v === "object" ? (v as T) : ({} as T);
+const toObj = <T,>(v: any): T => (v && typeof v === "object" ? (v as T) : ({} as T));
 const N = (x: any, d = 0) => (Number.isFinite(Number(x)) ? Number(x) : d);
-const fmtDate = (ts?: number) =>
-  new Date(N(ts, Date.now())).toLocaleString();
+const fmtDate = (ts?: number) => new Date(N(ts, Date.now())).toLocaleString();
 
 /* ---------- Hooks ---------- */
 function useHistoryAPI(): SavedMatch[] {
   const [rows, setRows] = React.useState<SavedMatch[]>([]);
   React.useEffect(() => {
-    try {
-      setRows(toArr<SavedMatch>(History.list?.()));
-    } catch {
-      setRows([]);
-    }
+    (async () => {
+      try {
+        const list = await History.list();
+        setRows(toArr<SavedMatch>(list));
+      } catch {
+        setRows([]);
+      }
+    })();
+
+    const onUpd = () => {
+      (async () => {
+        try {
+          const list = await History.list();
+          setRows(toArr<SavedMatch>(list));
+        } catch {
+          setRows([]);
+        }
+      })();
+    };
+    window.addEventListener("dc-history-updated", onUpd);
+    return () => window.removeEventListener("dc-history-updated", onUpd);
   }, []);
   return rows;
 }
+
 function useStoreHistory(): SavedMatch[] {
   const [rows, setRows] = React.useState<SavedMatch[]>([]);
   React.useEffect(() => {
@@ -97,7 +112,7 @@ function buildDashboardForPlayer(
   const pid = player.id;
   const pname = player.name || "Joueur";
 
-  // ---- Évolution des moyennes (historique)
+  // Évolution des moyennes (historique)
   const evolution = records
     .filter((r) => toArr<PlayerLite>(r.players).some((p) => p.id === pid))
     .slice(0, 20)
@@ -109,9 +124,8 @@ function buildDashboardForPlayer(
         toObj<any>(ss)?.[pid] ??
         {};
       const v =
-        Number(
-          pstat.avg3 ?? pstat.avg_3 ?? pstat.avg3Darts ?? pstat.average3
-        ) || (quick?.avg3 ?? 0);
+        Number(pstat.avg3 ?? pstat.avg_3 ?? pstat.avg3Darts ?? pstat.average3) ||
+        (quick?.avg3 ?? 0);
       return {
         date: new Date(N(r.updatedAt ?? r.createdAt, Date.now())).toLocaleDateString(),
         avg3: v,
@@ -119,17 +133,16 @@ function buildDashboardForPlayer(
     })
     .reverse();
 
-  // ---- Distribution (buckets)
-  const buckets =
-    quick?.buckets
-      ? {
-          "0-59": N(quick.buckets["0-59"], 0),
-          "60-99": N(quick.buckets["60-99"], 0),
-          "100+": N(quick.buckets["100+"], 0),
-          "140+": N(quick.buckets["140+"], 0),
-          "180": N(quick.buckets["180"], 0),
-        }
-      : { "0-59": 0, "60-99": 0, "100+": 0, "140+": 0, "180": 0 };
+  // Distribution (buckets)
+  const buckets = quick?.buckets
+    ? {
+        "0-59": N(quick.buckets["0-59"], 0),
+        "60-99": N(quick.buckets["60-99"], 0),
+        "100+": N(quick.buckets["100+"], 0),
+        "140+": N(quick.buckets["140+"], 0),
+        "180": N(quick.buckets["180"], 0),
+      }
+    : { "0-59": 0, "60-99": 0, "100+": 0, "140+": 0, "180": 0 };
 
   return {
     playerId: pid,
@@ -165,14 +178,15 @@ const row: React.CSSProperties = {
 /* ---------- Page ---------- */
 export default function StatsHub(props: Props) {
   const go = props.go ?? (() => {});
-  const initialTab: "history" | "stats" =
-    props.tab === "stats" ? "stats" : "history";
+  const initialTab: "history" | "stats" = props.tab === "stats" ? "stats" : "history";
   const [tab, setTab] = React.useState<"history" | "stats">(initialTab);
 
+  // 1) Sources d'historique
   const persisted = useHistoryAPI();
   const mem = toArr<SavedMatch>(props.memHistory);
   const fromStore = useStoreHistory();
 
+  // 2) Fusion & déduplication (par id, conserve la version la plus récente)
   const records = React.useMemo(() => {
     const byId = new Map<string, SavedMatch>();
     const push = (r: any) => {
@@ -187,11 +201,11 @@ export default function StatsHub(props: Props) {
     mem.forEach(push);
     fromStore.forEach(push);
     return Array.from(byId.values()).sort(
-      (a, b) =>
-        N(b.updatedAt ?? b.createdAt, 0) - N(a.updatedAt ?? a.createdAt, 0)
+      (a, b) => N(b.updatedAt ?? b.createdAt, 0) - N(a.updatedAt ?? a.createdAt, 0)
     );
   }, [persisted, mem, fromStore]);
 
+  // 3) Liste des joueurs rencontrés dans l'historique
   const players = React.useMemo<PlayerLite[]>(() => {
     const map = new Map<string, PlayerLite>();
     for (const r of records)
@@ -209,6 +223,7 @@ export default function StatsHub(props: Props) {
     );
   }, [records]);
 
+  // 4) Sélection du joueur + quick stats
   const [selectedPlayerId, setSelectedPlayerId] = React.useState<string | null>(
     players[0]?.id ?? null
   );
@@ -218,10 +233,9 @@ export default function StatsHub(props: Props) {
   const selectedPlayer =
     players.find((p) => p.id === selectedPlayerId) || players[0];
 
-  // ---- LIVE quick stats (store.*) pour le joueur sélectionné
   const quick = useQuickStats(selectedPlayer?.id || null);
 
-  // bloc dépliant
+  // 5) Bloc dépliant (sélecteur joueurs)
   const [openPlayers, setOpenPlayers] = React.useState(true);
 
   return (
@@ -237,11 +251,8 @@ export default function StatsHub(props: Props) {
       </div>
 
       {tab === "history" ? (
-        // ⬇️ Remplacement : on monte la nouvelle page Historique
-        <HistoryPage
-          store={{ history: records } as any} // on réutilise les enregistrements fusionnés
-          go={go}
-        />
+        // Page Historique (réutilise la fusion d’enregistrements)
+        <HistoryPage store={{ history: records } as any} go={go} />
       ) : (
         <>
           {/* ===== Bloc dépliant Joueurs (au-dessus du dashboard) ===== */}
@@ -272,9 +283,7 @@ export default function StatsHub(props: Props) {
                     />
                   ))
                 ) : (
-                  <div style={{ color: T.text70, fontSize: 13 }}>
-                    Aucun joueur détecté.
-                  </div>
+                  <div style={{ color: T.text70, fontSize: 13 }}>Aucun joueur détecté.</div>
                 )}
               </div>
             )}
@@ -318,8 +327,7 @@ function HistoryList({
         const status = rec.status ?? "finished";
         const winnerId = rec.winnerId ?? null;
         const first = players[0]?.name || "—";
-        const sub =
-          players.length > 1 ? `${first} + ${players.length - 1} autre(s)` : first;
+        const sub = players.length > 1 ? `${first} + ${players.length - 1} autre(s)` : first;
         return (
           <div key={rec.id} style={row}>
             <div style={{ minWidth: 0 }}>
@@ -337,13 +345,10 @@ function HistoryList({
               >
                 {sub}
               </div>
-              <div style={{ color: T.text70 }}>
-                {fmtDate(rec.updatedAt ?? rec.createdAt)}
-              </div>
+              <div style={{ color: T.text70 }}>{fmtDate(rec.updatedAt ?? rec.createdAt)}</div>
               {winnerId && (
                 <div style={{ marginTop: 4 }}>
-                  Vainqueur :{" "}
-                  <b>{players.find((p) => p.id === winnerId)?.name ?? "—"}</b>
+                  Vainqueur : <b>{players.find((p) => p.id === winnerId)?.name ?? "—"}</b>
                 </div>
               )}
             </div>
