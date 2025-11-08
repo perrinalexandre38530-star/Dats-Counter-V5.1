@@ -32,6 +32,10 @@ import AvatarCreator from "./pages/AvatarCreator";
 // Historique (pour StatsDetail / upsert / get)
 import { History } from "./lib/history";
 
+// DEV uniquement
+import { installHistoryProbe } from "./dev/devHistoryProbe";
+if (import.meta.env.DEV) installHistoryProbe();
+
 // --------------------------------------------
 type Tab =
   | "home"

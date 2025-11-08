@@ -8,6 +8,21 @@ export default function Games({
 }: {
   setTab: (tab: any) => void;
 }) {
+  // -- Déclare les jeux ici (seul X01 est activé)
+  const GAMES: {
+    id: string;
+    title: string;
+    subtitle: string;
+    tab: string;
+    enabled: boolean;
+  }[] = [
+    { id: "x01", title: "X01", subtitle: "301 / 501 / 701 / 1001 — double-out", tab: "x01setup", enabled: true },
+    { id: "cricket", title: "Cricket", subtitle: "15–20 + Bull — fermetures et points", tab: "cricket", enabled: false },
+    { id: "killer", title: "Killer", subtitle: "Double ton numéro — deviens Killer", tab: "killer", enabled: false },
+    { id: "shanghai", title: "Shanghai", subtitle: "Cible du tour, S/D/T — Shanghai = win", tab: "shanghai", enabled: false },
+    { id: "battle", title: "Battle Royale", subtitle: "Mode fun à plusieurs — éliminations successives", tab: "battle", enabled: false },
+  ];
+
   return (
     <div
       className="container"
@@ -44,36 +59,15 @@ export default function Games({
           gap: 14,
         }}
       >
-        <GameCard
-          title="X01"
-          subtitle="301 / 501 / 701 / 1001 — double-out"
-          onClick={() => setTab("x01setup")}
-        />
-
-        <GameCard
-          title="Cricket"
-          subtitle="15–20 + Bull — fermetures et points"
-          onClick={() => setTab("cricket")}
-        />
-
-        <GameCard
-          title="Killer"
-          subtitle="Double ton numéro — deviens Killer"
-          onClick={() => setTab("killer")}
-        />
-
-        <GameCard
-          title="Shanghai"
-          subtitle="Cible du tour, S/D/T — Shanghai = win"
-          onClick={() => setTab("shanghai")}
-        />
-
-        <GameCard
-          title="Battle Royale"
-          subtitle="Mode fun à plusieurs — éliminations successives"
-          onClick={() => setTab("battle")}
-          disabled
-        />
+        {GAMES.map((g) => (
+          <GameCard
+            key={g.id}
+            title={g.title}
+            subtitle={g.subtitle}
+            onClick={() => setTab(g.tab)}
+            disabled={!g.enabled}
+          />
+        ))}
       </div>
     </div>
   );
@@ -91,10 +85,27 @@ function GameCard({
   onClick: () => void;
   disabled?: boolean;
 }) {
+  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+    if (disabled) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    onClick();
+  };
+
   return (
     <button
+      aria-disabled={disabled ? true : undefined}
       disabled={disabled}
-      onClick={onClick}
+      onClick={handleClick}
+      onKeyDown={(e) => {
+        if (disabled && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
+      title={disabled ? "Bientôt disponible" : undefined}
       style={{
         width: "100%",
         textAlign: "left",
@@ -108,6 +119,7 @@ function GameCard({
         alignItems: "center",
         justifyContent: "space-between",
         transition: "transform 0.15s ease",
+        pointerEvents: "auto", // On garde le tooltip
       }}
       onMouseEnter={(e) =>
         !disabled && (e.currentTarget.style.transform = "scale(1.02)")
@@ -122,19 +134,31 @@ function GameCard({
           </div>
         )}
       </div>
+
       <span
         style={{
-          background: "linear-gradient(180deg, #ffc63a, #ffaf00)",
-          color: "#111",
+          background: disabled
+            ? "linear-gradient(180deg, #6b7280, #4b5563)" // gris
+            : "linear-gradient(180deg, #ffc63a, #ffaf00)",
+          color: disabled ? "#e5e7eb" : "#111",
           borderRadius: 999,
           padding: "6px 14px",
           fontWeight: 800,
           fontSize: 13,
-          border: "1px solid rgba(255,180,0,.35)",
-          boxShadow: "0 0 10px rgba(240,177,42,.25)",
+          border: disabled ? "1px solid rgba(148,163,184,.35)" : "1px solid rgba(255,180,0,.35)",
+          boxShadow: disabled ? "none" : "0 0 10px rgba(240,177,42,.25)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
         }}
       >
-        Jouer
+        {disabled ? (
+          <>
+            <span aria-hidden>🔒</span> Bientôt
+          </>
+        ) : (
+          "Jouer"
+        )}
       </span>
     </button>
   );

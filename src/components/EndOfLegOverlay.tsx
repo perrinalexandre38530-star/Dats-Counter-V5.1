@@ -1,10 +1,10 @@
 // ============================================
 // src/components/EndOfLegOverlay.tsx
-// Overlay "Classement de la manche" — compact + libellés FR
-// (Version intégrée aux nouvelles stats: accepte LegResult *ou* LegStats)
-// - Accordéons, tables compactes, labels FR
-// - AUCUNE dépendance à StatsSelectors (autonome)
-// - mergeLegToBasics() appelé au clic sur "Sauvegarder"
+// Overlay "Classement de la manche" — compact + labels FR
+// (Compat total: accepte LegacyLegResult *ou* LegStats, sans rien modifier ailleurs)
+// - AUCUNE écriture dans le pont ni profils (zéro side effects)
+// - Calcule/fait des fallbacks pour toutes les valeurs manquantes
+// - Graphs protégés (montage conditionnel)
 // ============================================
 
 import React from "react";
@@ -22,12 +22,11 @@ import {
 } from "recharts";
 
 import type { LegStats, PlayerId } from "../lib/stats";
-import { getBasicProfileStats } from "../lib/statsBridge";
 
-/* ---- Types légers (compat) ---- */
+// --- Types légers (compat) ---
 type PlayerMini = { id: string; name: string; avatarDataUrl?: string | null };
 
-/* ---- Ancien schéma (compat) ---- */
+// --- Ancien schéma (compat) ---
 export type LegacyLegResult = {
   legNo: number;
   winnerId: string;
@@ -50,11 +49,25 @@ export type LegacyLegResult = {
   h100?: Record<string, number>;
   h140?: Record<string, number>;
   h180?: Record<string, number>;
+  // Champs “patch” qu’on a déjà vus dans votre projet:
+  coHits?: Record<string, number>;
+  coAtt?: Record<string, number>;
+  points?: Record<string, number>;
+  // variantes de noms
+  misses?: Record<string, number>;
+  busts?: Record<string, number>;
+  dbulls?: Record<string, number>;
+  miss?: Record<string, number>;
+  bust?: Record<string, number>;
+  dbull?: Record<string, number>;
+  missPct?: Record<string, number>;
+  bustPct?: Record<string, number>;
+  dbullPct?: Record<string, number>;
 };
 
+// --- Props ---
 type Props = {
   open: boolean;
-  // Peut être l'ancien LegacyLegResult OU le nouveau LegStats
   result: LegacyLegResult | LegStats | null;
   playersById: Record<string, PlayerMini>;
   onClose: () => void;
@@ -62,7 +75,231 @@ type Props = {
   onSave?: (res: LegacyLegResult | LegStats) => void;
 };
 
-/* ====== WRAPPER (sans hooks) ====== */
+// ---------- Utils ----------
+const n = (v: any) => (typeof v === "number" && isFinite(v) ? v : 0);
+const f2 = (v: any) =>
+  typeof v === "number" && isFinite(v) ? (Math.round(v * 100) / 100).toFixed(2) : "0.00";
+
+const pctFmt = (hits: number, den: number) =>
+  den > 0 ? `${((hits / den) * 100).toFixed(1)}%` : "0.0%";
+
+function isLegStatsObj(x: any): x is LegStats {
+  return x && typeof x === "object" && x.perPlayer && (x.players?.length ?? 0) > 0;
+}
+
+// ---------- Adapteurs NOUVELLES STATS ----------
+function idsFromNew(leg: LegStats): string[] {
+  // parfois leg.players = string[] ou {id,name}[]
+  if (Array.isArray(leg.players) && typeof leg.players[0] === "string") {
+    return leg.players as unknown as string[];
+  }
+  return (leg.players as Array<{ id: string }>).map((p) => p.id);
+}
+
+function remainingFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  const start = n((leg as any).startScore ?? (leg as any).start ?? 501);
+  const scored = n(st.totalScored ?? st.points ?? st.pointsSum);
+  const approx = Math.max(0, start - scored);
+  // direct si présent
+  return n(st.remaining ?? approx);
+}
+
+function visitsFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  // visits direct sinon darts/3 arrondi sup
+  const d = n(st.darts ?? st.dartsThrown);
+  return n(st.visits ?? (d ? Math.ceil(d / 3) : 0));
+}
+
+function avg3FromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  // sources possibles
+  if (typeof st.avg3 === "number") return st.avg3;
+  const v = visitsFromNew(leg, pid);
+  const scored = n(st.totalScored ?? st.points ?? st.pointsSum);
+  if (v > 0) return scored / v; // dans votre app, avg3 est “par volée”
+  const d = n(st.darts ?? st.dartsThrown);
+  return d > 0 ? (scored / d) * 3 : 0;
+}
+
+function bestVisitFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  return n(st.bestVisit ?? st.best ?? st.maxVisit ?? st.bins?.maxVisit);
+}
+
+function powerBucketsFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  const b = st.bins || {};
+  return {
+    h60: n(b["60+"] ?? b["60"] ?? 0),
+    h100: n(b["100+"] ?? 0),
+    h140: n(b["140+"] ?? 0),
+    h180: n(b["180"] ?? 0),
+  };
+}
+
+function impactsFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  // “rates” sont des compteurs dans vos captures (pas des %)
+  const r = st.rates || {};
+  const darts = n(st.darts ?? st.dartsThrown);
+  const doubles = n(st.doubles ?? r.dblHits ?? 0);
+  const triples = n(st.triples ?? r.triHits ?? 0);
+  const ob = n(st.ob ?? r.bullHits ?? 0);
+  const ib = n(st.ib ?? r.dbullHits ?? 0);
+  const bulls = ob + ib;
+  return {
+    doubles,
+    triples,
+    ob,
+    ib,
+    bulls,
+    pDB: pctFmt(doubles, darts),
+    pTP: pctFmt(triples, darts),
+    pBull: pctFmt(ob, darts),
+    pDBull: pctFmt(ib, darts),
+  };
+}
+
+function checkoutFromNew(leg: LegStats, pid: string) {
+  const st: any = leg.perPlayer?.[pid] ?? {};
+  const co = st.co || {};
+  const count = n(co.coHits ?? co.hits ?? 0);
+  const avg = n(co.avgCODarts ?? co.avgDarts ?? 0);
+  const hi = n(co.highestCO ?? co.best ?? 0);
+  return { coCount: count, coDartsAvg: avg, highestCO: hi };
+}
+
+function rowFromNew(leg: LegStats, pid: string, nameOf: (id: string) => string) {
+  const darts = n((leg as any).perPlayer?.[pid]?.darts ?? (leg as any).perPlayer?.[pid]?.dartsThrown ?? 0);
+  const visits = visitsFromNew(leg, pid);
+  const avg3 = avg3FromNew(leg, pid);
+  const best = bestVisitFromNew(leg, pid);
+  const remaining = remainingFromNew(leg, pid);
+  const p = powerBucketsFromNew(leg, pid);
+  const imp = impactsFromNew(leg, pid);
+  const co = checkoutFromNew(leg, pid);
+  return {
+    pid,
+    name: nameOf(pid),
+    remaining,
+    avg3,
+    best,
+    darts,
+    visits,
+    h60: p.h60,
+    h100: p.h100,
+    h140: p.h140,
+    h180: p.h180,
+    doubles: imp.doubles,
+    triples: imp.triples,
+    ob: imp.ob,
+    ib: imp.ib,
+    bulls: imp.bulls,
+    pDB: imp.pDB,
+    pTP: imp.pTP,
+    pBull: imp.pBull,
+    pDBull: imp.pDBull,
+    coCount: co.coCount,
+    coDartsAvg: co.coDartsAvg,
+    highestCO: co.highestCO,
+  };
+}
+
+function sortOrderNew(leg: LegStats, ids: string[]) {
+  return ids.slice().sort((a, b) => {
+    const ra = remainingFromNew(leg, a);
+    const rb = remainingFromNew(leg, b);
+    if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
+    if (ra !== rb) return ra - rb;
+    const aa = avg3FromNew(leg, a);
+    const ab = avg3FromNew(leg, b);
+    return ab - aa;
+  });
+}
+
+// ---------- Adapteur LEGACY ----------
+function val(obj: Record<string, number> | undefined, k: string) {
+  return obj ? n(obj[k]) : 0;
+}
+
+function rowFromLegacy(res: LegacyLegResult, pid: string, nameOf: (id: string) => string) {
+  const darts = val(res.darts, pid);
+  const visits = val(res.visits, pid) || (darts ? Math.ceil(darts / 3) : 0);
+  const avg3 =
+    typeof res.avg3?.[pid] === "number"
+      ? n(res.avg3[pid])
+      : darts > 0
+      ? (n(res.points?.[pid]) / darts) * 3
+      : 0;
+
+  const obRaw =
+    res.hitsBySector?.[pid]?.["OB"] ??
+    res.bulls?.[pid] /* si on a seulement bulls total, on split 50/50 pour l’affichage */ ??
+    0;
+  const ibRaw = res.hitsBySector?.[pid]?.["IB"] ?? res.dbull?.[pid] ?? res.dbulls?.[pid] ?? 0;
+
+  const ob = n(obRaw);
+  const ib = n(ibRaw);
+  const bulls = ob + ib;
+
+  const doubles = n(res.doubles?.[pid]);
+  const triples = n(res.triples?.[pid]);
+
+  const h60 = n(res.h60?.[pid] ?? 0);
+  const h100 = n(res.h100?.[pid] ?? 0);
+  const h140 = n(res.h140?.[pid] ?? 0);
+  const h180 = n(res.h180?.[pid] ?? res.x180?.[pid] ?? 0);
+
+  const coCount = n(res.coHits?.[pid] ?? res.checkoutDartsByPlayer?.[pid]?.length ?? 0);
+  const coDartsAvgArr = res.checkoutDartsByPlayer?.[pid];
+  const coDartsAvg = coCount && coDartsAvgArr?.length ? f2(coDartsAvgArr.reduce((s, x) => s + x, 0) / coDartsAvgArr.length) : 0;
+  const highestCO = n(res.bestCheckout?.[pid] ?? 0);
+
+  return {
+    pid,
+    name: nameOf(pid),
+    remaining: n(res.remaining?.[pid]),
+    avg3,
+    best: n(res.bestVisit?.[pid] ?? 0),
+    darts,
+    visits,
+    h60,
+    h100,
+    h140,
+    h180,
+    doubles,
+    triples,
+    ob,
+    ib,
+    bulls,
+    pDB: pctFmt(doubles, darts),
+    pTP: pctFmt(triples, darts),
+    pBull: pctFmt(ob, darts),
+    pDBull: pctFmt(ib, darts),
+    coCount,
+    coDartsAvg: typeof coDartsAvg === "number" ? coDartsAvg : n(parseFloat(String(coDartsAvg))),
+    highestCO,
+  };
+}
+
+function sortOrderLegacy(res: LegacyLegResult, ids: string[]) {
+  const order =
+    Array.isArray(res.order) && res.order.length
+      ? res.order.slice()
+      : ids.slice().sort((a, b) => {
+          const ra = n(res.remaining?.[a]);
+          const rb = n(res.remaining?.[b]);
+          if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
+          const aa = n(res.avg3?.[a]);
+          const ab = n(res.avg3?.[b]);
+          return ab - aa;
+        });
+  return order;
+}
+
+// ---------- Composant principal ----------
 export default function EndOfLegOverlay({
   open,
   result,
@@ -73,7 +310,7 @@ export default function EndOfLegOverlay({
 }: Props) {
   if (!open || !result) return null;
   return (
-    <OverlayInner
+    <Inner
       result={result}
       playersById={playersById}
       onClose={onClose}
@@ -83,163 +320,7 @@ export default function EndOfLegOverlay({
   );
 }
 
-/* ---------------------------------------------
-   ADAPTATEURS & CALCULS côté "nouvelles stats"
-   (autonomes: pas de StatsSelectors requis)
-----------------------------------------------*/
-function isLegStats(x: any): x is LegStats {
-  return x && typeof x === "object" && x.perPlayer && x.players && Array.isArray(x.players);
-}
-
-// Score restant approximé: startScore - totalScored (>=0)
-function computeRemainingApprox(leg: LegStats, pid: PlayerId) {
-  const st = leg.perPlayer[pid];
-  const approx = Math.max(0, (leg.startScore ?? 0) - (st?.totalScored ?? 0));
-  return approx;
-}
-
-// Moyenne /3: on prend (totalScored / visits), puis *3
-function computeAvg3FromNew(leg: LegStats, pid: PlayerId) {
-  const st = leg.perPlayer[pid];
-  const visits = st?.visits ?? 0;
-  if (!visits) return 0;
-  const perVisit = (st?.totalScored ?? 0) / visits;
-  return perVisit; // ta logique d’app semblait déjà considérer "avg3" = par volée
-}
-
-// Best visit: on tente plusieurs clés usuelles
-function computeBestVisitNew(leg: LegStats, pid: PlayerId) {
-  const st: any = leg.perPlayer[pid] ?? {};
-  return (
-    st.bestVisit ??
-    st.best ??
-    st.maxVisit ??
-    st.bins?.maxVisit ??
-    0
-  );
-}
-
-// Leaderboard: 1) restant = 0 d’abord (gagnant), 2) restant croissant, 3) avg3 décroissant
-function leaderboardNew(leg: LegStats): string[] {
-  const ids = leg.players.map((p) => p.id);
-  return ids.sort((a, b) => {
-    const ra = computeRemainingApprox(leg, a);
-    const rb = computeRemainingApprox(leg, b);
-    if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
-    if (ra !== rb) return ra - rb;
-    const aa = computeAvg3FromNew(leg, a);
-    const ab = computeAvg3FromNew(leg, b);
-    return ab - aa;
-  });
-}
-
-function legToRowsViaNewStats(leg: LegStats, nameOf: (id: string) => string) {
-  const order = leaderboardNew(leg);
-  return order.map((pid, idx) => {
-    const s: any = leg.perPlayer[pid] ?? {};
-    const remaining = computeRemainingApprox(leg, pid);
-    const avg3 = computeAvg3FromNew(leg, pid);
-    const best = computeBestVisitNew(leg, pid);
-
-    const rate = (k: string) => Number(s?.rates?.[k] ?? 0);
-    const bin = (k: string) => Number(s?.bins?.[k] ?? 0);
-
-    const darts = Number(s?.darts ?? 0);
-    const pct = (hits: number) => (darts > 0 ? ((hits / darts) * 100).toFixed(1) + "%" : "0.0%");
-
-    const ob = rate("bullHits");  // Outer Bull
-    const ib = rate("dbullHits"); // Inner Bull
-
-    return {
-      pid,
-      rank: idx + 1,
-      name: nameOf(pid),
-      remaining,
-      avg3,
-      best,
-      darts,
-      visits: Number(s?.visits ?? 0),
-      x180: bin("180"),
-      doubles: rate("dblHits"),
-      triples: rate("triHits"),
-      ob,
-      ib,
-      bulls: ob + ib,
-      h60: bin("60+"),
-      h100: bin("100+"),
-      h140: bin("140+"),
-      h180: bin("180"),
-      coCount: Number(s?.co?.coHits ?? 0),
-      coDartsAvg: Number(s?.co?.avgCODarts ?? 0),
-      highestCO: Number(s?.co?.highestCO ?? 0),
-      pDB: pct(rate("dblHits")),
-      pTP: pct(rate("triHits")),
-      pBull: pct(ob),
-      pDBull: pct(ib),
-    };
-  });
-}
-
-/* ---------------------------------------------
-   Adaptateur "legacy"
-----------------------------------------------*/
-function avgArray(arr?: number[]) {
-  return arr && arr.length
-    ? Math.round((arr.reduce((s, x) => s + x, 0) / arr.length) * 100) / 100
-    : 0;
-}
-
-function legToRowsViaLegacy(res: LegacyLegResult, nameOf: (id: string) => string) {
-  const ids = Object.keys(res.remaining || {});
-  const order = Array.isArray(res.order) && res.order.length ? res.order.slice() : ids.slice().sort((a, b) => {
-    const ra = res.remaining?.[a] ?? Number.POSITIVE_INFINITY;
-    const rb = res.remaining?.[b] ?? Number.POSITIVE_INFINITY;
-    if ((ra === 0) !== (rb === 0)) return ra === 0 ? -1 : 1;
-    const aa = res.avg3?.[a] ?? 0;
-    const ab = res.avg3?.[b] ?? 0;
-    return ab - aa;
-  });
-
-  const get = (obj: Record<string, number | undefined> | undefined, k: string) => obj?.[k] ?? 0;
-
-  return order.map((pid, i) => {
-    const ob = res.hitsBySector?.[pid]?.["OB"] ?? 0;
-    const ib = res.hitsBySector?.[pid]?.["IB"] ?? 0;
-    const darts = get(res.darts, pid);
-    const pct = (a: number, b: number) => (b > 0 ? ((a / b) * 100).toFixed(1) + "%" : "0.0%");
-
-    return {
-      pid,
-      rank: i + 1,
-      name: nameOf(pid),
-      remaining: get(res.remaining, pid),
-      avg3: get(res.avg3, pid),
-      best: res.bestVisit?.[pid] ?? 0,
-      darts,
-      visits: get(res.visits, pid),
-      x180: res.x180?.[pid] ?? 0,
-      doubles: res.doubles?.[pid] ?? 0,
-      triples: res.triples?.[pid] ?? 0,
-      ob,
-      ib,
-      bulls: ob + ib,
-      h60: res.h60?.[pid] ?? 0,
-      h100: res.h100?.[pid] ?? 0,
-      h140: res.h140?.[pid] ?? 0,
-      h180: res.h180?.[pid] ?? 0,
-      coCount: res.checkoutDartsByPlayer?.[pid]?.length ?? 0,
-      coDartsAvg: avgArray(res.checkoutDartsByPlayer?.[pid]),
-      highestCO: res.bestCheckout?.[pid] ?? 0,
-      pDB: pct(res.doubles?.[pid] ?? 0, darts),
-      pTP: pct(res.triples?.[pid] ?? 0, darts),
-      pBull: pct(ob, darts),
-      pDBull: pct(ib, darts),
-    };
-  });
-}
-
-/* ====== INNER (avec hooks) ====== */
-function OverlayInner({
+function Inner({
   result,
   playersById,
   onClose,
@@ -253,7 +334,7 @@ function OverlayInner({
   onSave?: (res: LegacyLegResult | LegStats) => void;
 }) {
   const nameOf = React.useCallback(
-    (id?: string | null) => playersById[id || ""]?.name ?? (id ? id : "—"),
+    (id?: string | null) => playersById[id || ""]?.name ?? (id || "—"),
     [playersById]
   );
   const avatarOf = React.useCallback(
@@ -261,69 +342,57 @@ function OverlayInner({
     [playersById]
   );
 
-  // ---- helpers numériques & % ----
-  const num = (n?: number | null) =>
-    typeof n === "number" && isFinite(n) ? n : 0;
-  const fmt2 = (n?: number | null) =>
-    typeof n === "number" && isFinite(n) ? (Math.round(n * 100) / 100).toFixed(2) : "0.00";
-
-  // ---- rows + ordre via nouvelle API ou legacy
+  // --- rows ---
   const rows = React.useMemo(() => {
-    if (isLegStats(result)) return legToRowsViaNewStats(result, nameOf);
-    return legToRowsViaLegacy(result as LegacyLegResult, nameOf);
+    if (isLegStatsObj(result)) {
+      const ids = idsFromNew(result);
+      const ord = sortOrderNew(result, ids);
+      return ord.map((pid) => rowFromNew(result, pid, nameOf));
+    } else {
+      const r = result as LegacyLegResult;
+      const ids = Object.keys(r.remaining || r.avg3 || {});
+      const ord = sortOrderLegacy(r, ids);
+      return ord.map((pid) => rowFromLegacy(r, pid, nameOf));
+    }
   }, [result, nameOf]);
 
-  // ---- winner / meta
-  const winnerId = React.useMemo(() => {
-    if (isLegStats(result)) return result.winnerId ?? rows[0]?.pid ?? null;
-    return (result as LegacyLegResult).winnerId ?? rows[0]?.pid ?? null;
-  }, [result, rows]);
+  const legNo = (isLegStatsObj(result) ? (result as any).legNo : (result as LegacyLegResult).legNo) ?? 1;
+  const finishedAt = isLegStatsObj(result)
+    ? (result as any).finishedAt ?? Date.now()
+    : (result as LegacyLegResult).finishedAt ?? Date.now();
+  const winnerId = isLegStatsObj(result)
+    ? ((result as any).winnerId ?? rows[0]?.pid ?? null)
+    : ((result as LegacyLegResult).winnerId ?? rows[0]?.pid ?? null);
 
-  const legNo = isLegStats(result) ? (result.legNo as any) : (result as LegacyLegResult).legNo;
-  const finishedAt = isLegStats(result)
-    ? ((result as any).finishedAt ?? Date.now())
-    : (result as LegacyLegResult).finishedAt;
-
-  // ---- Best-of pour Résumé
+  // --- Best-of pour le résumé ---
   const minDarts = Math.min(...rows.map((r) => (r.darts > 0 ? r.darts : Infinity)));
   const minDartsRow = rows.find((r) => r.darts === minDarts);
-
   const bestAvg = Math.max(...rows.map((r) => r.avg3 || 0));
-  const bestAvgRow = rows.find((r) => r.avg3 === bestAvg);
-
+  const bestAvgRow = rows.find((r) => r.avg3 === bestAvg) || null;
   const bestVol = Math.max(...rows.map((r) => r.best || 0));
-  const bestVolRow = rows.find((r) => r.best === bestVol);
+  const bestVolRow = rows.find((r) => r.best === bestVol) || null;
 
-  const parsePct = (s: string) => {
-    const n = parseFloat(String(s).replace("%", ""));
-    return isFinite(n) ? n : 0;
-  };
+  // Pourcentages : déjà formatés, on en tire un ordre simple
+  const bestPDBRow = rows.slice().sort((a, b) => parseFloat(String(b.pDB)) - parseFloat(String(a.pDB)))[0] || null;
+  const bestPTPRow = rows.slice().sort((a, b) => parseFloat(String(b.pTP)) - parseFloat(String(a.pTP)))[0] || null;
+  const bestBullRow = rows.slice().sort((a, b) => (b.bulls || 0) - (a.bulls || 0))[0] || null;
 
-  const bestPDB = Math.max(...rows.map((r) => parsePct(r.pDB)));
-  const bestPDBRow = rows.find((r) => parsePct(r.pDB) === bestPDB) ?? null;
-
-  const bestPTP = Math.max(...rows.map((r) => parsePct(r.pTP)));
-  const bestPTPRow = rows.find((r) => parsePct(r.pTP) === bestPTP) ?? null;
-
-  const bestBullTotal = Math.max(...rows.map((r) => r.bulls || 0));
-  const bestBullRow = rows.find((r) => r.bulls === bestBullTotal);
-
-  // ---- Graph data (guards)
+  // Graph bar
   const barData = React.useMemo(
-    () => rows.map((r) => ({ name: r.name, avg3: Number(fmt2(r.avg3)) })),
+    () => rows.map((r) => ({ name: r.name, avg3: Number(f2(r.avg3)) })),
     [rows]
   );
 
-  // Radar (legacy uniquement)
+  // Radar (legacy uniquement si secteurs dispos)
   const radarKeys = React.useMemo(() => {
-    if (!isLegStats(result)) {
+    if (!isLegStatsObj(result)) {
       const res = result as LegacyLegResult;
       const first = rows[0]?.pid;
       const m = res.hitsBySector || {};
       if (!first || !m[first]) return null;
       const entries = Object.entries(m[first])
         .filter(([k]) => k !== "MISS")
-        .sort((a, b) => (b[1] as number) - (a[1] as number))
+        .sort((a, b) => (n(b[1]) - n(a[1])))
         .slice(0, 12)
         .map(([k]) => k);
       return entries.length ? entries : null;
@@ -331,20 +400,21 @@ function OverlayInner({
     return null;
   }, [result, rows]);
 
-  // ---- handler "Sauvegarder": MERGE + callback + close
-  function handleSave() {
-    try {
-      mergeLegToBasics(result as any); // ← alimente le pont stats basiques
-    } catch {}
+  // Actions
+  const handleSave = () => {
+    // ⚠️ Pas d’écriture dans vos stores ici pour éviter les crashs
     try {
       onSave?.(result);
     } catch {}
     onClose();
-  }
+  };
 
-  // ---- UI
+  // --- UI ---
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
       style={{
         position: "fixed",
         inset: 0,
@@ -357,11 +427,9 @@ function OverlayInner({
         padding: 12,
         color: "#e7e7e7",
       }}
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(980px, 96vw)",
           maxHeight: "92vh",
@@ -372,7 +440,6 @@ function OverlayInner({
           boxShadow: "0 16px 44px rgba(0,0,0,.45)",
           fontSize: 12,
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -394,7 +461,7 @@ function OverlayInner({
             Classement de la manche #{legNo}
           </div>
           <div style={{ opacity: 0.7, fontSize: 11, marginLeft: 6 }}>
-            Manche terminée — {new Date(finishedAt ?? Date.now()).toLocaleTimeString()}
+            Manche terminée — {new Date(finishedAt).toLocaleTimeString()}
           </div>
           <div style={{ flex: 1 }} />
           <button onClick={onClose} title="Fermer" style={btn("transparent", "#ddd", "#ffffff22")}>
@@ -404,7 +471,7 @@ function OverlayInner({
 
         {/* Corps */}
         <div style={{ padding: 10, paddingTop: 8 }}>
-          {/* Classement (liste compacte) */}
+          {/* Classement */}
           <div
             style={{
               borderRadius: 10,
@@ -413,7 +480,7 @@ function OverlayInner({
               marginBottom: 10,
             }}
           >
-            {rows.map((r) => {
+            {rows.map((r, idx) => {
               const avatar = avatarOf(r.pid);
               const finished = (r.remaining ?? 0) === 0;
               return (
@@ -442,7 +509,7 @@ function OverlayInner({
                       fontSize: 12,
                     }}
                   >
-                    {r.rank}
+                    {idx + 1}
                   </div>
                   <div
                     style={{
@@ -454,11 +521,7 @@ function OverlayInner({
                     }}
                   >
                     {avatar ? (
-                      <img
-                        src={avatar}
-                        alt=""
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
+                      <img src={avatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     ) : (
                       <div
                         style={{
@@ -484,20 +547,21 @@ function OverlayInner({
             })}
           </div>
 
-          {/* ===== Accordéons ===== */}
+          {/* Résumé */}
           <Accordion title="Résumé de la partie" defaultOpen>
             <SummaryRows
               winnerName={nameOf(winnerId || "")}
-              minDartsRow={rows.find((rr) => rr.darts === Math.min(...rows.map((r) => (r.darts > 0 ? r.darts : Infinity))))}
-              bestAvgRow={rows.find((rr) => rr.avg3 === Math.max(...rows.map((r) => r.avg3 || 0)))}
-              bestVolRow={rows.find((rr) => rr.best === Math.max(...rows.map((r) => r.best || 0)))}
-              bestPDBRow={rows.length ? rows.slice().sort((a, b) => parseFloat(String(b.pDB)) - parseFloat(String(a.pDB)))[0] : null}
-              bestPTPRow={rows.length ? rows.slice().sort((a, b) => parseFloat(String(b.pTP)) - parseFloat(String(a.pTP)))[0] : null}
-              bestBullRow={rows.length ? rows.slice().sort((a, b) => (b.bulls || 0) - (a.bulls || 0))[0] : null}
-              fmt2={fmt2}
+              minDartsRow={minDartsRow || null}
+              bestAvgRow={bestAvgRow}
+              bestVolRow={bestVolRow}
+              bestPDBRow={bestPDBRow}
+              bestPTPRow={bestPTPRow}
+              bestBullRow={bestBullRow}
+              fmt2={f2}
             />
           </Accordion>
 
+          {/* Stats rapides */}
           <Accordion title="Stats rapides">
             <div style={{ overflowX: "auto" }}>
               <table style={tableBase}>
@@ -521,7 +585,7 @@ function OverlayInner({
                       <TDStrong>{r.name}</TDStrong>
                       <TD>{r.visits}</TD>
                       <TD>{r.darts}</TD>
-                      <TD>{fmt2(r.avg3)}</TD>
+                      <TD>{f2(r.avg3)}</TD>
                       <TD>{r.h60}</TD>
                       <TD>{r.h100}</TD>
                       <TD>{r.h140}</TD>
@@ -535,6 +599,7 @@ function OverlayInner({
             </div>
           </Accordion>
 
+          {/* Stats Darts */}
           <Accordion title="Stats Darts">
             <div style={{ overflowX: "auto" }}>
               <table style={tableBase}>
@@ -554,7 +619,7 @@ function OverlayInner({
                     <tr key={`darts-${r.pid}`} style={rowLine}>
                       <TDStrong>{r.name}</TDStrong>
                       <TD>{r.coCount}</TD>
-                      <TD>{r.coCount ? fmt2(r.coDartsAvg) : "—"}</TD>
+                      <TD>{r.coCount ? r.coDartsAvg : "—"}</TD>
                       <TD>{r.doubles}</TD>
                       <TD>{r.triples}</TD>
                       <TD>{r.ob}</TD>
@@ -566,6 +631,7 @@ function OverlayInner({
             </div>
           </Accordion>
 
+          {/* Stats globales */}
           <Accordion title="Stats globales">
             <div style={{ overflowX: "auto" }}>
               <table style={{ ...tableBase, minWidth: 620 }}>
@@ -583,11 +649,11 @@ function OverlayInner({
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {rows.map((r, i) => (
                     <tr key={`global-${r.pid}`} style={rowLine}>
-                      <TD>{r.rank}</TD>
+                      <TD>{i + 1}</TD>
                       <TDStrong>{r.name}</TDStrong>
-                      <TD>{fmt2(r.avg3)}</TD>
+                      <TD>{f2(r.avg3)}</TD>
                       <TD>{r.best}</TD>
                       <TD>{r.darts}</TD>
                       <TD>{r.pDB}</TD>
@@ -601,6 +667,7 @@ function OverlayInner({
             </div>
           </Accordion>
 
+          {/* Graphs */}
           <Accordion title="Graphiques — hits par secteur & moyennes">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <ChartCard>
@@ -665,7 +732,7 @@ function OverlayInner({
   );
 }
 
-/* ---------- Résumé bloc ---------- */
+// ---------- Résumé ----------
 function SummaryRows({
   winnerName,
   minDartsRow,
@@ -682,7 +749,7 @@ function SummaryRows({
       <KV
         label="Min Darts"
         value={
-          isFinite(minDartsRow?.darts) ? (
+          minDartsRow ? (
             <span>
               <b style={{ color: "#ffcf57" }}>{minDartsRow.name}</b> — {minDartsRow.darts}
             </span>
@@ -759,7 +826,7 @@ function SummaryRows({
   );
 }
 
-/* ---------- Accordéon ---------- */
+// ---------- UI helpers ----------
 function Accordion({
   title,
   children,
@@ -830,27 +897,22 @@ function Accordion({
   );
 }
 
-/* ---------- Hook & Guards Charts ---------- */
 function useSizeReady<T extends HTMLElement>(minW = 220, minH = 220) {
   const ref = React.useRef<T | null>(null);
   const [ready, setReady] = React.useState(false);
-
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-
     const check = () => {
       const w = el.clientWidth;
       const h = el.clientHeight;
       setReady(w >= minW && h >= minH);
     };
-
     check();
     const ro = new ResizeObserver(check);
     ro.observe(el);
     return () => ro.disconnect();
   }, [minW, minH]);
-
   return { ref, ready };
 }
 
@@ -871,7 +933,6 @@ function ChartMountGuard({
   );
 }
 
-/* ---------- UI helpers ---------- */
 function ChartCard({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -935,15 +996,7 @@ function TH({ children }: { children: React.ReactNode }) {
 }
 function TD({ children }: { children: React.ReactNode }) {
   return (
-    <td
-      style={{
-        padding: "6px 8px",
-        fontSize: 12,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {children}
-    </td>
+    <td style={{ padding: "6px 8px", fontSize: 12, whiteSpace: "nowrap" }}>{children}</td>
   );
 }
 function TDStrong({ children }: { children: React.ReactNode }) {
