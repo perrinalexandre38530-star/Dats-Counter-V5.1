@@ -15,6 +15,34 @@ import ProfileAvatar from "../components/ProfileAvatar";
 import ProfileStarRing from "../components/ProfileStarRing";
 import type { Store, Profile, Friend } from "../lib/types";
 import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
+import { getBasicProfileStatsSync } from "../lib/statsLiteIDB";
+
+/* ===== Helper lecture instantanée (mini-cache IDB) ===== */
+function useBasicStats(playerId: string | undefined | null) {
+  const empty = React.useMemo(
+    () => ({
+      avg3: 0,
+      bestVisit: 0,
+      bestCheckout: 0,
+      wins: 0,
+      games: 0,
+      winRate: 0,
+      darts: 0,
+    }),
+    []
+  );
+  if (!playerId) return empty;
+  const s = getBasicProfileStatsSync(playerId);
+  return {
+    avg3: Number(s?.avg3 ?? 0),
+    bestVisit: Number(s?.bestVisit ?? 0),
+    bestCheckout: Number(s?.bestCheckout ?? 0),
+    wins: Number(s?.wins ?? 0),
+    games: Number(s?.games ?? 0),
+    winRate: Number(s?.winRate ?? 0),
+    darts: Number(s?.darts ?? 0),
+  };
+}
 
 /* ================================
    Page — Profils
@@ -77,7 +105,7 @@ export default function Profiles({
 
   const active = profiles.find((p) => p.id === activeProfileId) || null;
 
-  // Précharge les stats du profil actif si absentes
+  // Précharge les stats du profil actif si absentes (asynchrone, pour hydrater statsMap)
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -94,7 +122,7 @@ export default function Profiles({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id]);
 
-  // Pré-chauffage pour TOUS les profils locaux visibles
+  // Pré-chauffage pour TOUS les profils locaux visibles (remplit statsMap)
   React.useEffect(() => {
     let stopped = false;
     (async () => {
@@ -111,11 +139,18 @@ export default function Profiles({
     return () => {
       stopped = true;
     };
-  }, [profiles]);
+  }, [profiles]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ Moyenne 3-darts du profil actif (pour l’anneau)
-  const activeAvg3D =
-    active?.id ? (statsMap[active.id]?.avg3d ?? (statsMap[active.id] as any)?.avg3 ?? null) : null;
+  // ✅ Moyenne 3-darts du profil actif (priorité au cache sync)
+  const activeAvg3D = React.useMemo<number | null>(() => {
+    if (!active?.id) return null;
+    const bs = getBasicProfileStatsSync(active.id);
+    if (Number.isFinite(bs?.avg3)) return Number(bs.avg3);
+    const inMap = statsMap[active.id];
+    if (Number.isFinite((inMap as any)?.avg3d)) return Number((inMap as any).avg3d);
+    if (Number.isFinite((inMap as any)?.avg3)) return Number((inMap as any).avg3);
+    return null;
+  }, [active?.id, statsMap]);
 
   // ✅ Helper navigation avatar (optionnelle)
   const openAvatarCreator = React.useCallback(() => {
@@ -724,7 +759,11 @@ function LocalProfiles({
         const STAR = 9;
 
         return (
-          <div className="item" key={p.id} style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            className="item"
+            key={p.id}
+            style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}
+          >
             {/* gauche */}
             <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
               <div style={{ position: "relative", width: AVA, height: AVA, flex: "0 0 auto" }}>
@@ -778,7 +817,13 @@ function LocalProfiles({
                   </div>
                 ) : (
                   <>
-                    <div style={{ fontWeight: 800, whiteSpace: "nowrap", textAlign: "left" }}>
+                    <div
+                      style={{
+                        fontWeight: 800,
+                        whiteSpace: "nowrap",
+                        textAlign: "left",
+                      }}
+                    >
                       <a
                         href={`#/stats?pid=${p.id}`}
                         onClick={(e) => {
@@ -953,44 +998,15 @@ function EditInline({
   );
 }
 
-/* ------ Gold mini-stats (FIX CO + Win%) ------ */
+/* ------ Gold mini-stats (lecture SYNC cache) ------ */
 function GoldMiniStats({ profileId }: { profileId: string }) {
-  const [stats, setStats] = React.useState<BasicProfileStats | null>(null);
+  const bs = useBasicStats(profileId);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const s = await getBasicProfileStats(profileId);
-        if (!cancelled) setStats(s);
-      } catch {
-        if (!cancelled) setStats(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [profileId]);
-
-  // champs robustes quelle que soit la source
-  const avg3 =
-    Number.isFinite((stats as any)?.avg3d) ? (stats as any).avg3d :
-    Number.isFinite((stats as any)?.avg3)  ? (stats as any).avg3  : 0;
-
-  const best = Number((stats as any)?.bestVisit ?? 0);
-
-  // ✅ CO = meilleur checkout si dispo, sinon 0
-  const co = Number((stats as any)?.bestCheckout ?? 0);
-
-  // ✅ Win% : on prend d'abord winRate (statsBridge), sinon wins/legs|games
-  const winPct = (() => {
-    const wr = (stats as any)?.winRate ?? (stats as any)?.winPct;
-    if (Number.isFinite(wr)) return Math.round(Number(wr));
-    const wins = Number((stats as any)?.wins ?? 0);
-    const legs = Number((stats as any)?.legs ?? 0);
-    const games = Number((stats as any)?.games ?? 0);
-    if (legs > 0)  return Math.round((wins / legs) * 100);
-    if (games > 0) return Math.round((wins / games) * 100);
-    return 0;
-  })();
+  // champs robustes
+  const avg3 = Number.isFinite(bs.avg3) ? bs.avg3 : 0;
+  const best = Number(bs.bestVisit ?? 0);
+  const co = Number(bs.bestCheckout ?? 0);
+  const winPct = Math.round(Number(bs.winRate ?? 0));
 
   const pillW = "clamp(58px, 17vw, 78px)";
 

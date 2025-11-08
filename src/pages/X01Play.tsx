@@ -32,6 +32,7 @@ import { StatsBridge } from "../lib/statsBridge";
 // Stats locales riches (on garde, pour compat interne si besoin ponctuel)
 import * as StatsOnce from "../lib/statsOnce";
 import { saveMatchStats, aggregateMatch } from "../lib/stats";
+import { addMatchSummary } from "../lib/statsLiteIDB";
 
 // Résumé cumulable
 import { commitMatchSummary, buildX01Summary } from "../lib/playerStats";
@@ -953,6 +954,30 @@ export default function X01Play({
               meta: { currentSet, currentLeg: currentLegInSet, legsTarget },
             },
           });
+
+// === ÉCRIRE l’agrégat joueurs dans IndexedDB + mini-cache ===
+// On reconstruit un delta simple par joueur (darts, points, bestVisit, bestCheckout)
+try {
+  const per: Record<string, { darts: number; points: number; bestVisit?: number; bestCheckout?: number }> = {};
+  for (const leg of matchLegsRef.current || []) {
+    const arr = (leg?.perPlayer || []) as Array<any>;
+    for (const pp of arr) {
+      const pid = pp.playerId;
+      if (!per[pid]) per[pid] = { darts: 0, points: 0, bestVisit: 0, bestCheckout: 0 };
+      per[pid].darts += Number(pp.darts || 0);
+      per[pid].points += Number(pp.points || 0);
+      per[pid].bestVisit = Math.max(per[pid].bestVisit || 0, Number(pp.bestVisit || 0));
+      per[pid].bestCheckout = Math.max(per[pid].bestCheckout || 0, Number(pp.bestCheckout || 0));
+    }
+  }
+  await addMatchSummary({
+    winnerId: (winner?.id ?? null) || (summary?.winnerId ?? null),
+    perPlayer: per,
+  });
+} catch (e) {
+  console.warn("[statsLiteIDB:addMatchSummary] failed:", e);
+}
+
           // ---------------------------------------------------------------
 
           // ===== [STATS LITE] push agrégats légers → IndexedDB =====

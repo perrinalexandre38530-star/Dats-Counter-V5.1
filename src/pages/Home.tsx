@@ -5,13 +5,14 @@
 // - Layout mobile sans scroll + variante ultra-compacte
 // - Grille 2 colonnes sur tablette
 // - [NEW] Couronne d’étoiles EXTERNE autour du médaillon (ProfileStarRing)
+// - [NEW] Lecture instantanée des stats via statsLiteIDB (mini-cache sync)
 // ============================================
 
 import React from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
 import ProfileStarRing from "../components/ProfileStarRing";
 import type { Store, Profile } from "../lib/types";
-import { getBasicProfileStats, type BasicProfileStats } from "../lib/statsBridge";
+import { getBasicProfileStatsSync, type BasicProfileStats } from "../lib/statsLiteIDB";
 
 type Tab =
   | "home" | "games" | "profiles" | "friends" | "all" | "stats" | "settings"
@@ -32,7 +33,7 @@ export default function Home({
   const activeProfileId = store?.activeProfileId ?? null;
   const active = profiles.find((p) => p.id === activeProfileId) ?? null;
 
-  const basicStats = useBasicStats(active?.id || null);
+  const basicStats = active?.id ? useBasicStats(active.id) : undefined;
 
   return (
     <div
@@ -189,25 +190,11 @@ export default function Home({
   );
 }
 
-/* ---------- Hook: charge les stats basiques pour un profil ---------- */
-function useBasicStats(pid: string | null) {
-  const [cache, setCache] = React.useState<Record<string, BasicProfileStats | undefined>>({});
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!pid) return;
-      if (cache[pid]) return;
-      try {
-        const s = await getBasicProfileStats(pid);
-        if (!cancelled) setCache((m) => ({ ...m, [pid]: s }));
-      } catch {
-        /* no-op */
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid]);
-  return pid ? cache[pid] : undefined;
+/* ---------- PATCH 2: lecture instantanée depuis le mini-cache ---------- */
+function useBasicStats(playerId: string) {
+  // lecture synchronisée : toujours instantanée (cache tenu à jour à la fin des matchs)
+  const s = getBasicProfileStatsSync(playerId);
+  return s; // { games, darts, avg3, bestVisit, bestCheckout, wins, winRate? }
 }
 
 /* ---------- Carte dorée du profil connecté + RING ÉTOILES ---------- */
@@ -222,20 +209,21 @@ function ActiveProfileCard({
   onNameClick: () => void;
   basicStats?: BasicProfileStats;
 }) {
+  // Fallback legacy si jamais des anciennes cartes poussent encore des valeurs
   const legacy = (profile as any).stats || {};
-  const s = {
-    avg3: isNum(basicStats?.avg3) ? basicStats!.avg3 : (isNum(legacy.avg3) ? legacy.avg3 : 0),
-    bestVisit: isNum(basicStats?.bestVisit) ? basicStats!.bestVisit : (isNum(legacy.bestVisit) ? legacy.bestVisit : 0),
-    highestCheckout: isNum(basicStats?.highestCheckout) ? basicStats!.highestCheckout : (isNum(legacy.bestCheckout) ? legacy.bestCheckout : 0),
-    legsPlayed: isNum(basicStats?.legsPlayed) ? basicStats!.legsPlayed : (isNum(legacy.legsPlayed) ? legacy.legsPlayed : 0),
-    legsWon: isNum(basicStats?.legsWon) ? basicStats!.legsWon : (isNum(legacy.legsWon) ? legacy.legsWon : 0),
-  };
+  const avg3n = isNum(basicStats?.avg3) ? basicStats!.avg3 : (isNum(legacy.avg3) ? legacy.avg3 : 0);
+  const bestVisit = isNum(basicStats?.bestVisit) ? basicStats!.bestVisit : (isNum(legacy.bestVisit) ? legacy.bestVisit : 0);
+  const bestCheckout = isNum(basicStats?.bestCheckout) ? basicStats!.bestCheckout : (isNum(legacy.bestCheckout) ? legacy.bestCheckout : 0);
 
-  const avg3n = isNum(s.avg3) ? s.avg3 : 0;
+  const wins = isNum(basicStats?.wins) ? basicStats!.wins : (isNum(legacy.wins) ? legacy.wins : 0);
+  const games = isNum(basicStats?.games) ? basicStats!.games : (isNum(legacy.games) ? legacy.games : 0);
+  const winRate = isNum(basicStats?.winRate) ? basicStats!.winRate
+                 : games > 0 ? Math.round((wins / games) * 1000) / 10
+                 : null;
+
   const avg3 = (Math.round(avg3n * 10) / 10).toFixed(1);
-  const best = String(s.bestVisit || 0);
-  const co = String(s.highestCheckout || 0);
-  const wr = s.legsPlayed > 0 ? Math.round((s.legsWon / s.legsPlayed) * 100) : null;
+  const best = String(bestVisit || 0);
+  const co = String(bestCheckout || 0);
 
   const statusLabel =
     status === "away" ? "Absent" : status === "offline" ? "Hors ligne" : "En ligne";
@@ -398,7 +386,7 @@ function ActiveProfileCard({
         <StatMini label="Moy/3" value={avg3} />
         <StatMini label="Best" value={best} />
         <StatMini label="CO" value={co} />
-        <StatMini label="Win%" value={wr !== null ? `${wr}%` : "—"} />
+        <StatMini label="Win%" value={winRate !== null ? `${Math.round(Number(winRate))}%` : "—"} />
       </div>
     </div>
   );
